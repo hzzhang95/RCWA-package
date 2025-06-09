@@ -13,7 +13,8 @@ def _safe_solve(A, B):
 class rcwa():
     def __init__(
             self, wavelength, theta, phi, TE, TM, Lx, Ly,
-            basis=None, gap_material=None, dtype=torch.complex64, torch_device=None):
+            basis=None, gap_material=None, dtype=torch.complex64, torch_device=None,
+            requires_grad=False):
         # Device selection
         if torch_device == 'cuda' or torch_device == 'cpu':
             self.torch_device = torch.device(torch_device)
@@ -26,6 +27,7 @@ class rcwa():
             print("No device specified, defaulting to CPU.")
 
         self.dtype = dtype
+        self.requires_grad = requires_grad
 
         # Gap material
         if gap_material is None:
@@ -68,6 +70,8 @@ class rcwa():
         self.layer_count = 0
         self.layer_store = torch.tensor([0.0], dtype=torch.float32, device=self.torch_device)
         self.thickness_params = nn.ParameterList()  # For optimizable thicknesses
+        self.er_params = nn.ParameterList()
+        self.mur_params = nn.ParameterList()
 
     def _to_tensor(self, in_data):
         """
@@ -84,9 +88,13 @@ class rcwa():
         return out_data
     def parameters(self):
         """
-        Return all optimizable parameters (layer thicknesses).
+        Return all optimizable parameters (layer thicknesses, er, mur).
         """
-        return self.thickness_params
+        params = []
+        params += list(self.thickness_params)
+        params += list(self.er_params)
+        params += list(self.mur_params)
+        return params
     
     def add_ref_layer(self, er_ref=1.0, mur_ref=1.0):
         self.er_ref = torch.as_tensor(er_ref, dtype=self.dtype, device=self.torch_device)
@@ -127,24 +135,44 @@ class rcwa():
         Lamda_g_inv = torch.block_diag(inv_diag_Kz, inv_diag_Kz)
         self.V_g = self.Q_g @ Lamda_g_inv
 
-    def add_layer(self, er_layer=1.0, mur_layer=1.0, thickness=0.0):
+    def add_layer(self, er_layer=1.0, mur_layer=1.0, thickness=0.0, requires_grad=None):
         """
-        Add a layer. If requires_grad=True, thickness will be a learnable parameter.
+        Add a layer. If requires_grad=True, thickness, er, and mur will be learnable parameters.
         """
+        if requires_grad is None:
+            requires_grad = self.requires_grad
+
+        # Thickness parameter
         if requires_grad:
-            thickness_param = nn.Parameter(torch.tensor([float(thickness)], dtype=torch.float32, device=self.torch_device))
+            thickness_param = nn.Parameter(torch.tensor(float(thickness), dtype=torch.float32, device=self.torch_device))
             self.thickness_params.append(thickness_param)
             thickness_val = thickness_param
         else:
-            thickness_val = torch.tensor([float(thickness)], dtype=torch.float32, device=self.torch_device)
+            thickness_val = torch.tensor(float(thickness), dtype=torch.float32, device=self.torch_device)
+
+        # er parameter
+        if requires_grad:
+            er_param = nn.Parameter(torch.tensor(er_layer, dtype=self.dtype, device=self.torch_device))
+            self.er_params.append(er_param)
+            er_val = er_param
+        else:
+            er_val = torch.tensor(er_layer, dtype=self.dtype, device=self.torch_device)
+
+        # mur parameter
+        if requires_grad:
+            mur_param = nn.Parameter(torch.tensor(mur_layer, dtype=self.dtype, device=self.torch_device))
+            self.mur_params.append(mur_param)
+            mur_val = mur_param
+        else:
+            mur_val = torch.tensor(mur_layer, dtype=self.dtype, device=self.torch_device)
 
         self.layer_count += 1
-        self.er_layer.append(er_layer)
-        self.mur_layer.append(mur_layer)
-        er_conv = self._convolution_matrices(er_layer)
-        mur_conv = self._convolution_matrices(mur_layer)
+        self.er_layer.append(er_val)
+        self.mur_layer.append(mur_val)
+        er_conv = self._convolution_matrices(er_val)
+        mur_conv = self._convolution_matrices(mur_val)
         self.S_global = self._layer_S_matrix(thickness_val, self.S_global, er_conv, mur_conv)
-        self.layer_store = torch.cat([self.layer_store, thickness_val if isinstance(thickness_val, torch.Tensor) else torch.tensor([thickness_val], dtype=torch.float32, device=self.torch_device)])
+        self.layer_store = torch.cat([self.layer_store, thickness_val.unsqueeze(0)])
 
     def add_trs_layer(self, er_trs=1.0, mur_trs=1.0):
         self.er_trs = torch.as_tensor(er_trs, dtype=self.dtype, device=self.torch_device)
@@ -562,12 +590,12 @@ class rcwa():
                 torch.fft.ifft(torch.fft.ifft(uz.reshape(2 * self.M + 1, 2 * self.N + 1).T, norm='forward')[:, 0],
                                n=er.shape[1], norm='forward')))
 
-        Ex = torch.stack(Ex, axis=0)
-        Ey = torch.stack(Ey, axis=0)
-        Ez = torch.stack(Ez, axis=0)
-        Hx = torch.stack(Hx, axis=0)
-        Hy = torch.stack(Hy, axis=0)
-        Hz = torch.stack(Hz, axis=0)
+        Ex = torch.stack(Ex)
+        Ey = torch.stack(Ey)
+        Ez = torch.stack(Ez)
+        Hx = torch.stack(Hx)
+        Hy = torch.stack(Hy)
+        Hz = torch.stack(Hz)
         return Ex, Ey, Ez, Hx, Hy, Hz
 
     def calc_layer_absorption(self, layer_number, grid_points=10, er_imag=None, mur_imag=None):
@@ -654,15 +682,17 @@ class rcwa():
 
     def rebuild(self):
         """
-        Rebuild the S-matrix stack using the current thickness parameters.
+        Rebuild the S-matrix stack using the current thickness, er, and mur parameters.
         This should be called at each optimization step to ensure the RCWA state is up-to-date.
         """
         self.reset_stores()
         # Re-add reference layer
         self.add_ref_layer(er_ref=self.er_ref, mur_ref=self.mur_ref)
-        # Re-add all layers with current thickness (skip the first entry in layer_store, which is 0.0)
-        for i, (er, mur) in enumerate(zip(self.er_layer, self.mur_layer), start=1):
-            thickness = self.layer_store[i]
+        # Re-add all layers with current parameters (skip the first entry in layer_store, which is 0.0)
+        for i in range(len(self.thickness_params)):
+            thickness = self.thickness_params[i]
+            er = self.er_params[i]
+            mur = self.mur_params[i]
             self.add_layer(er_layer=er, mur_layer=mur, thickness=thickness, requires_grad=True)
         # Re-add transmission layer
         self.add_trs_layer(er_trs=self.er_trs, mur_trs=self.mur_trs)
