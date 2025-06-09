@@ -69,9 +69,11 @@ class rcwa():
         self.S_global_store, self.er_layer, self.mur_layer = [], [], []
         self.layer_count = 0
         self.layer_store = torch.tensor([0.0], dtype=torch.float32, device=self.torch_device)
-        self.thickness_params = nn.ParameterList()  # For optimizable thicknesses
-        self.er_params = nn.ParameterList()
-        self.mur_params = nn.ParameterList()
+
+        if self.requires_grad:
+            self.thickness_params = nn.ParameterList()  # For optimizable thicknesses
+            self.er_params = nn.ParameterList()
+            self.mur_params = nn.ParameterList()
 
     def _to_tensor(self, in_data):
         """
@@ -135,23 +137,20 @@ class rcwa():
         Lamda_g_inv = torch.block_diag(inv_diag_Kz, inv_diag_Kz)
         self.V_g = self.Q_g @ Lamda_g_inv
 
-    def add_layer(self, er_layer=1.0, mur_layer=1.0, thickness=0.0, requires_grad=None):
+    def add_layer(self, er_layer=1.0, mur_layer=1.0, thickness=0.0, optimizing='thickness'):
         """
         Add a layer. If requires_grad=True, thickness, er, and mur will be learnable parameters.
         """
-        if requires_grad is None:
-            requires_grad = self.requires_grad
-
         # Thickness parameter
-        if requires_grad:
-            thickness_param = nn.Parameter(torch.tensor(float(thickness), dtype=torch.float32, device=self.torch_device))
+        if optimizing == 'thickness' and self.requires_grad:
+            thickness_param = nn.Parameter(torch.tensor(thickness, dtype=torch.float32, device=self.torch_device))
             self.thickness_params.append(thickness_param)
             thickness_val = thickness_param
         else:
-            thickness_val = torch.tensor(float(thickness), dtype=torch.float32, device=self.torch_device)
+            thickness_val = torch.tensor(thickness, dtype=torch.float32, device=self.torch_device)
 
         # er parameter
-        if requires_grad:
+        if optimizing == 'er' and self.requires_grad:
             er_param = nn.Parameter(torch.tensor(er_layer, dtype=self.dtype, device=self.torch_device))
             self.er_params.append(er_param)
             er_val = er_param
@@ -159,7 +158,7 @@ class rcwa():
             er_val = torch.tensor(er_layer, dtype=self.dtype, device=self.torch_device)
 
         # mur parameter
-        if requires_grad:
+        if optimizing == 'mur' and self.requires_grad:
             mur_param = nn.Parameter(torch.tensor(mur_layer, dtype=self.dtype, device=self.torch_device))
             self.mur_params.append(mur_param)
             mur_val = mur_param
