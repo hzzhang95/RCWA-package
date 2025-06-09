@@ -10,32 +10,14 @@ def _safe_solve(A, B):
     except RuntimeError:
         return torch.matmul(torch.linalg.pinv(A), B)
 
-def _to_tensor(in_data, dtype = torch.complex64, device=None):
-    """
-    Converts input data to a 2D torch tensor.
-    """
-    if not torch.is_tensor(in_data):
-        out_data = torch.as_tensor(in_data, dtype=dtype, device=device)
-    else:
-        out_data = in_data.to(dtype=dtype, device=device)
-    if out_data.ndim == 0:
-        return out_data.reshape(1, 1)
-    elif out_data.ndim == 1:
-        return out_data.unsqueeze(0)
-    return out_data
-
-
 class rcwa():
     def __init__(
             self, wavelength, theta, phi, TE, TM, Lx, Ly,
             basis=None, gap_material=None, dtype=torch.complex64, torch_device=None):
         # Device selection
-        if torch_device == 'cuda':
-            self.torch_device = torch.device('cuda')
-            print(f"Using CUDA: {torch.cuda.get_device_name(self.torch_device)}")
-        elif torch_device == 'cpu':
-            self.torch_device = torch.device('cpu')
-            print("Using CPU.")
+        if torch_device == 'cuda' or torch_device == 'cpu':
+            self.torch_device = torch.device(torch_device)
+            print(f"Using " + str(torch_device))
         elif torch.cuda.is_available():
             self.torch_device = torch.device('cuda')
             print(f"No device specified, defaulting to CUDA: {torch.cuda.get_device_name(self.torch_device)}")
@@ -54,15 +36,15 @@ class rcwa():
             self.mur_gap = torch.tensor(gap_material['mur_gap'], dtype=self.dtype, device=self.torch_device)
 
         # Source
-        self.wavelength = torch.tensor(wavelength, dtype=self.dtype, device=self.torch_device)
-        self.theta = torch.tensor(theta, dtype=self.dtype, device=self.torch_device)
-        self.phi = torch.tensor(phi, dtype=self.dtype, device=self.torch_device)
-        self.TE = torch.tensor(TE, dtype=self.dtype, device=self.torch_device)
-        self.TM = torch.tensor(TM, dtype=self.dtype, device=self.torch_device)
+        self.wavelength = torch.as_tensor(wavelength, dtype=self.dtype, device=self.torch_device)
+        self.theta = torch.as_tensor(theta, dtype=self.dtype, device=self.torch_device)
+        self.phi = torch.as_tensor(phi, dtype=self.dtype, device=self.torch_device)
+        self.TE = torch.as_tensor(TE, dtype=self.dtype, device=self.torch_device)
+        self.TM = torch.as_tensor(TM, dtype=self.dtype, device=self.torch_device)
 
         # Lattice constants
-        self.Lx = torch.tensor(Lx, dtype=self.dtype, device=self.torch_device)
-        self.Ly = torch.tensor(Ly, dtype=self.dtype, device=self.torch_device)
+        self.Lx = torch.as_tensor(Lx, dtype=self.dtype, device=self.torch_device)
+        self.Ly = torch.as_tensor(Ly, dtype=self.dtype, device=self.torch_device)
 
         # Basis
         self.M = int(basis[0])
@@ -86,7 +68,20 @@ class rcwa():
         self.layer_count = 0
         self.layer_store = torch.tensor([0.0], dtype=torch.float32, device=self.torch_device)
         self.thickness_params = nn.ParameterList()  # For optimizable thicknesses
-        
+
+    def _to_tensor(self, in_data):
+        """
+        Converts input data to a 2D torch tensor.
+        """
+        if not torch.is_tensor(in_data):
+            out_data = torch.as_tensor(in_data, dtype=self.dtype, device=self.torch_device)
+        else:
+            out_data = in_data.to(dtype=self.dtype, device=self.torch_device)
+        if out_data.ndim == 0:
+            return out_data.reshape(1, 1)
+        elif out_data.ndim == 1:
+            return out_data.unsqueeze(0)
+        return out_data
     def parameters(self):
         """
         Return all optimizable parameters (layer thicknesses).
@@ -132,7 +127,7 @@ class rcwa():
         Lamda_g_inv = torch.block_diag(inv_diag_Kz, inv_diag_Kz)
         self.V_g = self.Q_g @ Lamda_g_inv
 
-    def add_layer(self, er_layer=1.0, mur_layer=1.0, thickness=0.0, requires_grad=False):
+    def add_layer(self, er_layer=1.0, mur_layer=1.0, thickness=0.0):
         """
         Add a layer. If requires_grad=True, thickness will be a learnable parameter.
         """
@@ -142,6 +137,7 @@ class rcwa():
             thickness_val = thickness_param
         else:
             thickness_val = torch.tensor([float(thickness)], dtype=torch.float32, device=self.torch_device)
+
         self.layer_count += 1
         self.er_layer.append(er_layer)
         self.mur_layer.append(mur_layer)
@@ -386,8 +382,8 @@ class rcwa():
         if z_depth > float(self.layer_store[layer_number]):
             raise ValueError('z depth must be less than thickness of the layer')
 
-        er = _to_tensor(self.er_layer[layer_number - 1], dtype=self.dtype, device=self.torch_device)
-        mur = _to_tensor(self.mur_layer[layer_number - 1], dtype=self.dtype, device=self.torch_device)
+        er = self._to_tensor(self.er_layer[layer_number - 1])
+        mur = self._to_tensor(self.mur_layer[layer_number - 1])
         er_conv = self._convolution_matrices(er)
         mur_conv = self._convolution_matrices(mur)
 
@@ -433,8 +429,8 @@ class rcwa():
         points = int(layer_thickness / precision)
         z_points = torch.linspace(0, layer_thickness, points, device=self.torch_device)
 
-        er = _to_tensor(self.er_layer[layer_number - 1])
-        mur = _to_tensor(self.mur_layer[layer_number - 1])
+        er = self._to_tensor(self.er_layer[layer_number - 1])
+        mur = self._to_tensor(self.mur_layer[layer_number - 1])
         er_conv = self._convolution_matrices(er)
         mur_conv = self._convolution_matrices(mur)
 
@@ -494,12 +490,12 @@ class rcwa():
                 torch.fft.ifft(torch.fft.ifft(uz.reshape(2 * self.M + 1, 2 * self.N + 1), norm='forward')[:, 0],
                                n=er.shape[0], norm='forward')))
 
-        Ex = torch.stack(Ex, axis=0)
-        Ey = torch.stack(Ey, axis=0)
-        Ez = torch.stack(Ez, axis=0)
-        Hx = torch.stack(Hx, axis=0)
-        Hy = torch.stack(Hy, axis=0)
-        Hz = torch.stack(Hz, axis=0)
+        Ex = torch.stack(Ex)
+        Ey = torch.stack(Ey)
+        Ez = torch.stack(Ez)
+        Hx = torch.stack(Hx)
+        Hy = torch.stack(Hy)
+        Hz = torch.stack(Hz)
         return Ex, Ey, Ez, Hx, Hy, Hz
 
     def solve_yz_field(self, layer_number, precision=0.01):
@@ -507,8 +503,8 @@ class rcwa():
         points = int(layer_thickness / precision)
         z_points = torch.linspace(0, layer_thickness, points, device=self.torch_device)
 
-        er = _to_tensor(self.er_layer[layer_number - 1])
-        mur = _to_tensor(self.mur_layer[layer_number - 1])
+        er = self._to_tensor(self.er_layer[layer_number - 1])
+        mur = self._to_tensor(self.mur_layer[layer_number - 1])
         er_conv = self._convolution_matrices(er)
         mur_conv = self._convolution_matrices(mur)
 
@@ -578,8 +574,8 @@ class rcwa():
         """
         Calculate the absorption in a given layer by integrating the power loss density over the layer thickness.
         """
-        er = _to_tensor(self.er_layer[layer_number - 1], dtype=self.dtype, device=self.torch_device)
-        mur = _to_tensor(self.mur_layer[layer_number - 1], dtype=self.dtype, device=self.torch_device)
+        er = self._to_tensor(self.er_layer[layer_number - 1], dtype=self.dtype, device=self.torch_device)
+        mur = self._to_tensor(self.mur_layer[layer_number - 1], dtype=self.dtype, device=self.torch_device)
         if er_imag is None:
             er_imag = er.imag
         if mur_imag is None:
