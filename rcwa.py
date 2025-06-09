@@ -141,27 +141,36 @@ class rcwa():
         """
         Add a layer. If requires_grad=True, thickness, er, and mur will be learnable parameters.
         """
-        # Thickness parameter
+        # Only create parameters if not already present
         if optimizing == 'thickness' and self.requires_grad:
-            thickness_param = nn.Parameter(torch.tensor(thickness, dtype=torch.float32, device=self.torch_device))
-            self.thickness_params.append(thickness_param)
-            thickness_val = thickness_param
+            if len(self.thickness_params) == 0:
+                thickness_param = nn.Parameter(torch.tensor(thickness, dtype=torch.float32, device=self.torch_device))
+                self.thickness_params.append(thickness_param)
+                thickness_val = thickness_param
+            else:
+                thickness_val = self.thickness_params[0]
         else:
             thickness_val = torch.tensor(thickness, dtype=torch.float32, device=self.torch_device)
 
         # er parameter
         if optimizing == 'er' and self.requires_grad:
-            er_param = nn.Parameter(torch.tensor(er_layer, dtype=self.dtype, device=self.torch_device))
-            self.er_params.append(er_param)
-            er_val = er_param
+            if len(self.er_params) == 0:
+                er_param = nn.Parameter(torch.tensor(er_layer, dtype=self.dtype, device=self.torch_device))
+                self.er_params.append(er_param)
+                er_val = er_param
+            else:
+                er_val = self.er_params[0]
         else:
             er_val = torch.tensor(er_layer, dtype=self.dtype, device=self.torch_device)
 
         # mur parameter
         if optimizing == 'mur' and self.requires_grad:
-            mur_param = nn.Parameter(torch.tensor(mur_layer, dtype=self.dtype, device=self.torch_device))
-            self.mur_params.append(mur_param)
-            mur_val = mur_param
+            if len(self.mur_params) == 0:
+                mur_param = nn.Parameter(torch.tensor(mur_layer, dtype=self.dtype, device=self.torch_device))
+                self.mur_params.append(mur_param)
+                mur_val = mur_param
+            else:
+                mur_val = self.mur_params[0]
         else:
             mur_val = torch.tensor(mur_layer, dtype=self.dtype, device=self.torch_device)
 
@@ -687,20 +696,16 @@ class rcwa():
         self.reset_stores()
         # Re-add reference layer
         self.add_ref_layer(er_ref=self.er_ref, mur_ref=self.mur_ref)
-        # Re-add all layers with current parameters (skip the first entry in layer_store, which is 0.0)
-        for i in range(len(self.thickness_params)):
-            thickness = self.thickness_params[i]
-            er = self.er_params[i]
-            mur = self.mur_params[i]
-            self.add_layer(er_layer=er, mur_layer=mur, thickness=thickness, requires_grad=True)
-        # Re-add transmission layer
+        # Add the optimizable layer using the existing parameter and material values
+        if len(self.thickness_params) > 0:
+            thickness = self.thickness_params[0]
+        else:
+            thickness = self.layer_store[1] if len(self.layer_store) > 1 else torch.tensor(0.0, device=self.torch_device)
+        er = self.er_layer[0] if len(self.er_layer) > 0 else torch.tensor(1.0, dtype=self.dtype, device=self.torch_device)
+        mur = self.mur_layer[0] if len(self.mur_layer) > 0 else torch.tensor(1.0, dtype=self.dtype, device=self.torch_device)
+        er_conv = self._convolution_matrices(er)
+        mur_conv = self._convolution_matrices(mur)
+        self.S_global = self._layer_S_matrix(thickness, self.S_global, er_conv, mur_conv)
+        self.layer_store = torch.cat([torch.tensor([0.0], dtype=torch.float32, device=self.torch_device), thickness.unsqueeze(0)])
+        # Add transmission layer
         self.add_trs_layer(er_trs=self.er_trs, mur_trs=self.mur_trs)
-
-    def set_layer_thickness(self, layer_idx, thickness_tensor):
-        """
-        Set the thickness parameter for a given layer index (1-based, as in layer_store).
-        This allows external optimization code to update thickness without re-adding layers.
-        """
-        if not torch.is_tensor(thickness_tensor):
-            thickness_tensor = torch.tensor([float(thickness_tensor)], dtype=torch.float32, device=self.torch_device)
-        self.layer_store[layer_idx] = thickness_tensor
