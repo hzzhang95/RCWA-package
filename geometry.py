@@ -105,3 +105,36 @@ class geometry(object):
                 self.er[idx0:idx1, :] = 1
                 self.mur[idx0:idx1, :] = 1
         return self.er[::2, ::2], self.mur[::2, ::2]
+
+    def build_photonic_crystal(self, rod_radius, lattice_constant):
+        """
+        Build a 2D square lattice photonic crystal of circular rods, symmetric and filled.
+        """
+        self.er = torch.zeros([2 * self.Nx, 2 * self.Ny], dtype=torch.complex64)
+        self.mur = torch.zeros([2 * self.Nx, 2 * self.Ny], dtype=torch.complex64)
+        rod_radius_pix = rod_radius * self.N
+        lattice_pix = lattice_constant * self.N
+
+        X_mesh, Y_mesh = torch.meshgrid(
+            torch.arange(-self.Nx, self.Nx), torch.arange(-self.Ny, self.Ny), indexing='ij'
+        )
+
+        # Center the lattice so that a rod is always at the center
+        center_x = 0
+        center_y = 0
+
+        # Find the number of rods needed to fill the region in each direction
+        num_x = int(math.ceil((2 * self.Nx) / lattice_pix))
+        num_y = int(math.ceil((2 * self.Ny) / lattice_pix))
+
+        # Compute the offset so that the center rod is at (0,0)
+        x_centers = torch.arange(-num_x // 2, num_x // 2 + 1) * lattice_pix
+        y_centers = torch.arange(-num_y // 2, num_y // 2 + 1) * lattice_pix
+
+        for xc in x_centers:
+            for yc in y_centers:
+                mask = (X_mesh - xc) ** 2 + (Y_mesh - yc) ** 2 <= rod_radius_pix ** 2
+                self.er[mask] = 1
+                self.mur[mask] = 1
+
+        return self.er[::2, ::2], self.mur[::2, ::2]
