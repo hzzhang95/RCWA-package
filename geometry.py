@@ -81,21 +81,27 @@ class geometry(object):
         return self.er[::2, ::2], self.mur[::2, ::2]
 
     def build_periodic_grating(self, bar_width, bar_spacing=None):
-        """Build a periodic grating structure."""
-        Lc = bar_width * self.N
-        Ls = bar_spacing * self.N if bar_spacing is not None else Lc
+        """Build a periodic grating structure filling the entire region, with center always filled."""
+        Lc = int(bar_width * self.N)
+        Ls = int(bar_spacing * self.N) if bar_spacing is not None else Lc
         period = Lc + Ls
         self.er = torch.zeros([2 * self.Nx, 2 * self.Ny], dtype=torch.complex64)
         self.mur = torch.zeros([2 * self.Nx, 2 * self.Ny], dtype=torch.complex64)
-        X_mesh, Y_mesh = torch.meshgrid(
-            torch.arange(-self.Nx, self.Nx), torch.arange(-self.Ny, self.Ny), indexing='ij'
-        )
-        A0 = torch.abs(X_mesh) < Lc
-        A1 = torch.abs(X_mesh + period) < Lc
-        A_1 = torch.abs(X_mesh - period) < Lc
-        A2 = torch.abs(X_mesh + 2 * period) < Lc
-        A_2 = torch.abs(X_mesh - 2 *  period) < Lc
-        mask = A0 | A1 | A_1 | A2 | A_2
-        self.er[mask] = 1
-        self.mur[mask] = 1
+        # Center the grating so that a bar is always at the center
+        center_idx = self.Nx
+        # Find the leftmost bar start so that center is inside a bar
+        offset = (center_idx % period) - (Lc // 2)
+        x_start_first = -self.Nx - offset
+        for x_start in range(x_start_first, self.Nx, period):
+            x0 = max(x_start, -self.Nx)
+            x1 = min(x_start + Lc, self.Nx)
+            idx0 = x0 + self.Nx
+            idx1 = x1 + self.Nx
+            if idx0 < 0:
+                idx0 = 0
+            if idx1 > 2 * self.Nx:
+                idx1 = 2 * self.Nx
+            if idx0 < idx1:
+                self.er[idx0:idx1, :] = 1
+                self.mur[idx0:idx1, :] = 1
         return self.er[::2, ::2], self.mur[::2, ::2]
