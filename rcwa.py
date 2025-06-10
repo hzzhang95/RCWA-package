@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 
+
 def _safe_solve(A, B):
     """
     Tries to solve AX = B. If A is singular or ill-conditioned, uses pseudo-inverse for stability.
@@ -9,6 +10,7 @@ def _safe_solve(A, B):
         return torch.linalg.solve(A, B)
     except RuntimeError:
         return torch.matmul(torch.linalg.pinv(A), B)
+
 
 class rcwa():
     def __init__(
@@ -98,7 +100,7 @@ class rcwa():
         params += list(self.er_params)
         params += list(self.mur_params)
         return params
-    
+
     def add_ref_layer(self, er_ref=1.0, mur_ref=1.0):
         self.er_ref = torch.as_tensor(er_ref, dtype=self.dtype, device=self.torch_device)
         self.mur_ref = torch.as_tensor(mur_ref, dtype=self.dtype, device=self.torch_device)
@@ -316,7 +318,8 @@ class rcwa():
 
     def _find_kz(self, er=1.0, mur=1.0):
         erc, murc = torch.conj(er), torch.conj(mur)
-        kz = torch.conj(torch.sqrt(erc * murc - self.Ksx ** 2 - self.Ksy ** 2).reshape(-1)).to(dtype=self.dtype, device=self.torch_device)
+        kz = torch.conj(torch.sqrt(erc * murc - self.Ksx ** 2 - self.Ksy ** 2).reshape(-1)).to(dtype=self.dtype,
+                                                                                               device=self.torch_device)
         return kz
 
     def _P_matrix(self, er_conv, mur_conv):
@@ -427,7 +430,8 @@ class rcwa():
 
         c_ln = _safe_solve(self.S_global_store[layer_number - 1][1],
                            self.c_ref - torch.matmul(self.S_global_store[layer_number - 1][0], self.c_src))
-        c_lp = torch.matmul(self.S_global_store[layer_number - 1][2], self.c_src) + torch.matmul(self.S_global_store[layer_number - 1][3], c_ln)
+        c_lp = torch.matmul(self.S_global_store[layer_number - 1][2], self.c_src) + torch.matmul(
+            self.S_global_store[layer_number - 1][3], c_ln)
 
         W = self.W_store[layer_number]
         V = self.V_store[layer_number]
@@ -474,7 +478,8 @@ class rcwa():
 
         c_ln = _safe_solve(self.S_global_store[layer_number - 1][1],
                            self.c_ref - torch.matmul(self.S_global_store[layer_number - 1][0], self.c_src))
-        c_lp = torch.matmul(self.S_global_store[layer_number - 1][2], self.c_src) + torch.matmul(self.S_global_store[layer_number - 1][3], c_ln)
+        c_lp = torch.matmul(self.S_global_store[layer_number - 1][2], self.c_src) + torch.matmul(
+            self.S_global_store[layer_number - 1][3], c_ln)
 
         W = self.W_store[layer_number]
         V = self.V_store[layer_number]
@@ -548,7 +553,8 @@ class rcwa():
 
         c_ln = _safe_solve(self.S_global_store[layer_number - 1][1],
                            self.c_ref - torch.matmul(self.S_global_store[layer_number - 1][0], self.c_src))
-        c_lp = torch.matmul(self.S_global_store[layer_number - 1][2], self.c_src) + torch.matmul(self.S_global_store[layer_number - 1][3], c_ln)
+        c_lp = torch.matmul(self.S_global_store[layer_number - 1][2], self.c_src) + torch.matmul(
+            self.S_global_store[layer_number - 1][3], c_ln)
 
         W = self.W_store[layer_number]
         V = self.V_store[layer_number]
@@ -634,7 +640,8 @@ class rcwa():
 
         c_ln = _safe_solve(self.S_global_store[layer_number - 1][1],
                            self.c_ref - torch.matmul(self.S_global_store[layer_number - 1][0], self.c_src))
-        c_lp = torch.matmul(self.S_global_store[layer_number - 1][2], self.c_src) + torch.matmul(self.S_global_store[layer_number - 1][3], c_ln)
+        c_lp = torch.matmul(self.S_global_store[layer_number - 1][2], self.c_src) + torch.matmul(
+            self.S_global_store[layer_number - 1][3], c_ln)
 
         W = self.W_store[layer_number]
         V = self.V_store[layer_number]
@@ -669,7 +676,7 @@ class rcwa():
             E_norm2 = torch.abs(ex) ** 2 + torch.abs(ey) ** 2 + torch.abs(ez) ** 2
             H_norm2 = torch.abs(hx) ** 2 + torch.abs(hy) ** 2 + torch.abs(hz) ** 2
             P_abs = -0.5 * E_norm2 * er_imag * dx * dy \
-                    -0.5 * H_norm2 * mur_imag * dx * dy
+                    - 0.5 * H_norm2 * mur_imag * dx * dy
             P_layer_abs.append(torch.sum(P_abs).real)
 
         P_layer_abs = torch.stack(P_layer_abs)
@@ -701,12 +708,16 @@ class rcwa():
         if len(self.thickness_params) > 0:
             thickness = self.thickness_params[0]
         else:
-            thickness = self.layer_store[1] if len(self.layer_store) > 1 else torch.tensor(0.0, device=self.torch_device)
-        er = self.er_layer[0] if len(self.er_layer) > 0 else torch.tensor(1.0, dtype=self.dtype, device=self.torch_device)
-        mur = self.mur_layer[0] if len(self.mur_layer) > 0 else torch.tensor(1.0, dtype=self.dtype, device=self.torch_device)
+            thickness = self.layer_store[1] if len(self.layer_store) > 1 else torch.tensor(0.0,
+                                                                                           device=self.torch_device)
+        er = self.er_layer[0] if len(self.er_layer) > 0 else torch.tensor(1.0, dtype=self.dtype,
+                                                                          device=self.torch_device)
+        mur = self.mur_layer[0] if len(self.mur_layer) > 0 else torch.tensor(1.0, dtype=self.dtype,
+                                                                             device=self.torch_device)
         er_conv = self._convolution_matrices(er)
         mur_conv = self._convolution_matrices(mur)
         self.S_global = self._layer_S_matrix(thickness, self.S_global, er_conv, mur_conv)
-        self.layer_store = torch.cat([torch.tensor([0.0], dtype=torch.float32, device=self.torch_device), thickness.unsqueeze(0)])
+        self.layer_store = torch.cat(
+            [torch.tensor([0.0], dtype=torch.float32, device=self.torch_device), thickness.unsqueeze(0)])
         # Add transmission layer
         self.add_trs_layer(er_trs=self.er_trs, mur_trs=self.mur_trs)

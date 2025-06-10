@@ -29,14 +29,14 @@ model = rcwa(
 )
 
 # Reference (air)
-model.add_ref_layer(er_ref=n_air**2, mur_ref=1.0)
+model.add_ref_layer(er_ref=n_air ** 2, mur_ref=1.0)
 
 # Optimizable layer (SiO2)
 init_thickness = wavelength / 4  # initial guess in microns
-model.add_layer(er_layer=n_sio2**2, mur_layer=1.0, thickness=init_thickness, optimizing='thickness')
+model.add_layer(er_layer=n_sio2 ** 2, mur_layer=1.0, thickness=init_thickness, optimizing='thickness')
 
 # Transmission port (Si)
-model.add_trs_layer(er_trs=n_si**2, mur_trs=1.0)
+model.add_trs_layer(er_trs=n_si ** 2, mur_trs=1.0)
 
 # Optimizer
 params = [p for p in model.parameters() if p.requires_grad]
@@ -47,7 +47,7 @@ for epoch in range(100):
     optimizer.zero_grad()
     model.rebuild()
     reflection, transmission = model.calc_global_ref_trs()
-    loss = - reflection # maximize reflection
+    loss = - reflection  # maximize reflection
     loss.backward()
     optimizer.step()
     thickness = model.thickness_params[0]
