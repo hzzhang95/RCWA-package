@@ -119,10 +119,6 @@ class geometry(object):
             torch.arange(-self.Nx, self.Nx), torch.arange(-self.Ny, self.Ny), indexing='ij'
         )
 
-        # Center the lattice so that a rod is always at the center
-        center_x = 0
-        center_y = 0
-
         # Find the number of rods needed to fill the region in each direction
         num_x = int(math.ceil((2 * self.Nx) / lattice_pix))
         num_y = int(math.ceil((2 * self.Ny) / lattice_pix))
