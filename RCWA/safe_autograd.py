@@ -1,11 +1,12 @@
 import torch
 
-def _lorentian_broadening(eigval, broadening_parameter=1.0e-12):
+def _lorentzian_broadening(eigval, broadening_parameter=1.0e-12):
     tmp = eigval.unsqueeze(-2) - eigval.unsqueeze(-1)
     return tmp / (torch.abs(tmp) ** 2 + broadening_parameter)
 
 # Inspiration of this method is taken from:
 # A. Francuz, N. Schuch, and B. Vanhecke, Stable and efficient differentiation of tensor network algorithms, Phys. Rev. Res. 7, 013237 (2025).
+
 
 class stable_eig(torch.autograd.Function):
     @staticmethod
@@ -20,7 +21,7 @@ class stable_eig(torch.autograd.Function):
 
         # Efficient diagonal matrix from grad_eigval
         grad_eigval_diag = torch.diag_embed(grad_eigval)
-        F = _lorentian_broadening(eigval)
+        F = _lorentzian_broadening(eigval)
         F.fill_diagonal_(0.0)
         XH = eigvec.conj().transpose(-2, -1)
         S = F * (XH @ grad_eigvec)
