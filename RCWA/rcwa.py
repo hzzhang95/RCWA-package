@@ -73,10 +73,10 @@ class RCWA():
         self.S_global = torch.stack([self.O_2MN.clone(), self.I_2MN.clone(), self.I_2MN.clone(), self.O_2MN.clone()])
 
         # Storage for simulation
-        self.W_store, self.V_store, self.Lamda_store = [], [], []
-        self.S_global_store, self.er_layer, self.mur_layer = [], [], []
+        self.W_store, self.V_store, self.Lamda_store, self.S_global_store = [], [], [], []
+        self.layer_configs = []
         self.layer_count = 0
-        self.layer_store = []
+        self.rebuild_counter = 0
 
         if self.requires_grad:
             self.thickness_params = nn.ParameterList()
@@ -97,19 +97,9 @@ class RCWA():
             return out_data.unsqueeze(0)
         return out_data
 
-    def parameters(self):
-        """
-        Return all optimizable parameters (layer thicknesses, er, mur).
-        """
-        params = []
-        params += list(self.thickness_params)
-        params += list(self.er_params)
-        params += list(self.mur_params)
-        return params
-
     def add_ref_layer(self, er_ref=1.0, mur_ref=1.0):
-        self.er_ref = torch.as_tensor(er_ref)
-        self.mur_ref = torch.as_tensor(mur_ref)
+        self.er_ref = torch.as_tensor(er_ref, dtype=self._dtype, device=self._torch_device)
+        self.mur_ref = torch.as_tensor(mur_ref, dtype= self._dtype, device=self._torch_device)
         self.n_inc = torch.sqrt(self.er_ref * self.mur_ref)
         sin_theta = torch.sin(self.theta)
         cos_theta = torch.cos(self.theta)
@@ -148,28 +138,31 @@ class RCWA():
         """
         Add a layer, if requires_grad=True, thickness, er, and mur will be learnable parameters.
         """
-        er_layer = self._to_tensor(er_layer)
-        mur_layer = self._to_tensor(mur_layer)
-        thickness = self._to_tensor(thickness)
-
-        if optimizing == 'thickness' and self.requires_grad:
-            thickness.requires_grad_()
-            self.thickness_params.append(thickness)
-        elif optimizing == 'er' and self.requires_grad:
-            er_layer.requires_grad_()
-            self.er_params.append(er_layer)
-        elif optimizing == 'mur' and self.requires_grad:
-            mur_layer.requires_grad_()
-            self.mur_params.append(mur_layer)
-
-        er_conv = self._convolution_matrices(er_layer)
-        mur_conv = self._convolution_matrices(mur_layer)
-        self.S_global = self._layer_S_matrix(thickness, self.S_global, er_conv, mur_conv)
-        self.layer_store.append(thickness)
-        with torch.no_grad():
+        if self.rebuild_counter == 0:
+            er_layer = self._to_tensor(er_layer)
+            mur_layer = self._to_tensor(mur_layer)
+            thickness = self._to_tensor(thickness)
+    
+            if self.requires_grad:
+                if optimizing == 'thickness' or 'thickness' in optimizing:
+                    thickness = nn.Parameter(thickness)
+                    self.thickness_params.append(thickness)
+                elif optimizing == 'er' or 'er' in optimizing:
+                    er_layer = nn.Parameter(er_layer)
+                    self.er_params.append(er_layer)
+                elif optimizing == 'mur' or 'mur' in optimizing:
+                    mur_layer = nn.Parameter(mur_layer)
+                    self.mur_params.append(mur_layer)
+    
+            er_conv = self._convolution_matrices(er_layer)
+            mur_conv = self._convolution_matrices(mur_layer)
+            self.S_global = self._layer_S_matrix(thickness, self.S_global, er_conv, mur_conv)
+            self.layer_configs.append([thickness, er_layer, mur_layer, optimizing])
             self.layer_count += 1
-            self.er_layer.append(er_layer)
-            self.mur_layer.append(mur_layer)
+        else:
+            er_conv = self._convolution_matrices(er_layer)
+            mur_conv = self._convolution_matrices(mur_layer)
+            self.S_global = self._layer_S_matrix(thickness, self.S_global, er_conv, mur_conv)
 
     def add_trs_layer(self, er_trs=1.0, mur_trs=1.0):
         self.er_trs = torch.as_tensor(er_trs, dtype=self._dtype, device=self._torch_device)
@@ -202,7 +195,7 @@ class RCWA():
         """
         Q_trs = self._Q_matrix_half(self.er_trs, self.mur_trs)
         Lamda_trs_inv = torch.diag(torch.hstack((-1j / self.kz_trs, -1j / self.kz_trs)))
-        V_trs = Q_trs @ Lamda_trs_inv
+        V_trs = torch.matmul(Q_trs, Lamda_trs_inv)
         if self.er_gap != self.er_trs or self.mur_gap != self.mur_trs:
             S11_trs, S12_trs, S21_trs, S22_trs = self._scattering_matrix_trs(V_trs)
         else:
@@ -245,12 +238,12 @@ class RCWA():
         P = self.TE * a_TE + self.TM * a_TM
         P /= torch.linalg.norm(P)
         self.c_src = torch.hstack((P[0] * delta_mn, P[1] * delta_mn))
-        self.c_ref = torch.matmul(self.S_global[0], self.c_src)
-        self.c_trs = torch.matmul(self.S_global[2], self.c_src)
+        self.c_ref = torch.matmul(self.S_global[0], self.c_src.squeeze(0))
+        self.c_trs = torch.matmul(self.S_global[2], self.c_src.squeeze(0))
         rx, ry = torch.split(self.c_ref, self.MN.item())
         tx, ty = torch.split(self.c_trs, self.MN.item())
-        rz = - torch.diag(1 / self.kz_ref) @ (torch.matmul(self.Kx, rx) + torch.matmul(self.Ky, ry))
-        tz = - torch.diag(1 / self.kz_trs) @ (torch.matmul(self.Kx, tx) + torch.matmul(self.Ky, ty))
+        rz = - torch.matmul(torch.diag(1 / self.kz_ref) , (torch.matmul(self.Kx, rx) + torch.matmul(self.Ky, ry)))
+        tz = - torch.matmul(torch.diag(1 / self.kz_trs) , (torch.matmul(self.Kx, tx) + torch.matmul(self.Ky, ty)))
         REF = torch.real(torch.diag(self.kz_ref) / self.mur_ref) @ (
                 torch.abs(rx) ** 2 + torch.abs(ry) ** 2 + torch.abs(rz) ** 2) / torch.real(
             self.kz_inc / self.mur_ref)
@@ -262,7 +255,7 @@ class RCWA():
     def _ref_region_S_matrix(self, S_global):
         Q_ref = self._Q_matrix_half(self.er_ref, self.mur_ref)
         Lamda_ref_inv = torch.diag(torch.cat([1j / self.kz_ref, 1j / self.kz_ref]))
-        V_ref = Q_ref @ Lamda_ref_inv
+        V_ref = torch.matmul(Q_ref , Lamda_ref_inv)
         if self.er_gap != self.er_ref or self.mur_gap != self.mur_ref:
             S11_ref, S12_ref, S21_ref, S22_ref = self._scattering_matrix_ref(V_ref)
         else:
@@ -288,7 +281,7 @@ class RCWA():
 
         Lamda_layer = torch.sqrt(Lamda2_layer)
         Lamda_inv = torch.diag(1 / Lamda_layer)
-        V_layer = Q_layer @ W_layer @ Lamda_inv
+        V_layer = torch.matmul(Q_layer , torch.matmul(W_layer , Lamda_inv))
         X_layer = torch.diag(torch.exp(-Lamda_layer * self.k0 * layer_thickness).squeeze())
         S11, S12 = self._scattering_matrix(W_layer, V_layer, X_layer)
         S_layer = torch.stack([S11, S12, S12, S11])
@@ -401,21 +394,22 @@ class RCWA():
         return H_conv
 
     def solve_xy_field(self, layer_number, z_depth):
-        if z_depth > float(self.layer_store[layer_number]):
+        layer_number -= 1  # Adjust for zero-based indexing
+        if z_depth > float(self.layer_configs[layer_number][0].item()):
             raise ValueError('z depth must be less than thickness of the layer')
 
-        er = self._to_tensor(self.er_layer[layer_number - 1])
-        mur = self._to_tensor(self.mur_layer[layer_number - 1])
+        er = self.layer_configs[layer_number][1]
+        mur = self.layer_configs[layer_number][2]
         er_conv = self._convolution_matrices(er)
         mur_conv = self._convolution_matrices(mur)
 
-        c_ln = _safe_solve(self.S_global_store[layer_number - 1][1],
-                           self.c_ref - torch.matmul(self.S_global_store[layer_number - 1][0], self.c_src))
-        c_lp = torch.matmul(self.S_global_store[layer_number - 1][2], self.c_src) + torch.matmul(
-            self.S_global_store[layer_number - 1][3], c_ln)
+        c_ln = _safe_solve(self.S_global_store[layer_number][1],
+                           self.c_ref - torch.matmul(self.S_global_store[layer_number][0], self.c_src))
+        c_lp = torch.matmul(self.S_global_store[layer_number][2], self.c_src) + torch.matmul(
+            self.S_global_store[layer_number][3], c_ln)
 
-        W = self.W_store[layer_number]
-        V = self.V_store[layer_number]
+        W = self.W_store[layer_number + 1]
+        V = self.V_store[layer_number + 1]
         M_int = torch.vstack([torch.hstack([W, W]), torch.hstack([-V, V])])
         M_g = torch.vstack(
             [torch.hstack([self.I_2MN.clone(), self.I_2MN.clone()]), torch.hstack([-self.V_g, self.V_g])])
@@ -430,7 +424,7 @@ class RCWA():
         Prop = torch.diag(
             torch.hstack([
                 torch.exp(-self.k0 * eig_val * z_depth),
-                torch.exp(-self.k0 * eig_val * (self.layer_store[layer_number - 1] - z_depth))
+                torch.exp(-self.k0 * eig_val * (self.layer_configs[layer_number][0] - z_depth))
             ])
         )
         psi = torch.linalg.multi_dot([c_int, Prop])
@@ -451,22 +445,23 @@ class RCWA():
         return Ex, Ey, Ez, Hx, Hy, Hz
 
     def solve_xz_field(self, layer_number, precision=0.01):
-        layer_thickness = float(self.layer_store[layer_number])
+        layer_number -= 1  # Adjust for zero-based indexing
+        layer_thickness = float(self.layer_configs[layer_number][0])
         points = int(layer_thickness / precision)
         z_points = torch.linspace(0, layer_thickness, points, device=self._torch_device)
 
-        er = self._to_tensor(self.er_layer[layer_number - 1])
-        mur = self._to_tensor(self.mur_layer[layer_number - 1])
+        er = self._to_tensor(self.layer_configs[layer_number][1])
+        mur = self._to_tensor(self.layer_configs[layer_number][2])
         er_conv = self._convolution_matrices(er)
         mur_conv = self._convolution_matrices(mur)
 
-        c_ln = _safe_solve(self.S_global_store[layer_number - 1][1],
-                           self.c_ref - torch.matmul(self.S_global_store[layer_number - 1][0], self.c_src))
-        c_lp = torch.matmul(self.S_global_store[layer_number - 1][2], self.c_src) + torch.matmul(
-            self.S_global_store[layer_number - 1][3], c_ln)
+        c_ln = _safe_solve(self.S_global_store[layer_number][1],
+                           self.c_ref - torch.matmul(self.S_global_store[layer_number][0], self.c_src))
+        c_lp = torch.matmul(self.S_global_store[layer_number][2], self.c_src) + torch.matmul(
+            self.S_global_store[layer_number][3], c_ln)
 
-        W = self.W_store[layer_number]
-        V = self.V_store[layer_number]
+        W = self.W_store[layer_number + 1]
+        V = self.V_store[layer_number + 1]
         M_int = torch.vstack([torch.hstack([W, W]), torch.hstack([-V, V])])
         M_g = torch.vstack(
             [torch.hstack([self.I_2MN.clone(), self.I_2MN.clone()]), torch.hstack([-self.V_g, self.V_g])])
@@ -488,7 +483,7 @@ class RCWA():
         for _z in z_points:
             Prop = torch.diag(
                 torch.hstack([torch.exp(-self.k0 * eig_val * _z),
-                              torch.exp(-self.k0 * eig_val * (self.layer_store[layer_number - 1] - _z))]))
+                              torch.exp(-self.k0 * eig_val * (self.layer_configs[layer_number][0] - _z))]))
 
             # Use multi_dot for improved stability
             psi = torch.linalg.multi_dot([M_int, Prop, c_int])
@@ -532,28 +527,29 @@ class RCWA():
         return Ex, Ey, Ez, Hx, Hy, Hz
 
     def solve_yz_field(self, layer_number, precision=0.01):
-        layer_thickness = float(self.layer_store[layer_number])
+        layer_number -= 1  # Adjust for zero-based indexing
+        layer_thickness = float(self.layer_configs[layer_number][0])
         points = int(layer_thickness / precision)
         z_points = torch.linspace(0, layer_thickness, points, device=self._torch_device)
 
-        er = self._to_tensor(self.er_layer[layer_number - 1])
-        mur = self._to_tensor(self.mur_layer[layer_number - 1])
+        er = self._to_tensor(self.layer_configs[layer_number][1])
+        mur = self._to_tensor(self.layer_configs[layer_number][2])
         er_conv = self._convolution_matrices(er)
         mur_conv = self._convolution_matrices(mur)
 
-        c_ln = _safe_solve(self.S_global_store[layer_number - 1][1],
-                           self.c_ref - torch.matmul(self.S_global_store[layer_number - 1][0], self.c_src))
-        c_lp = torch.matmul(self.S_global_store[layer_number - 1][2], self.c_src) + torch.matmul(
-            self.S_global_store[layer_number - 1][3], c_ln)
+        c_ln = _safe_solve(self.S_global_store[layer_number][1],
+                           self.c_ref - torch.matmul(self.S_global_store[layer_number][0], self.c_src))
+        c_lp = torch.matmul(self.S_global_store[layer_number][2], self.c_src) + torch.matmul(
+            self.S_global_store[layer_number][3], c_ln)
 
-        W = self.W_store[layer_number]
-        V = self.V_store[layer_number]
+        W = self.W_store[layer_number + 1]
+        V = self.V_store[layer_number + 1]
         M_int = torch.vstack([torch.hstack([W, W]), torch.hstack([-V, V])])
         M_g = torch.vstack(
             [torch.hstack([self.I_2MN.clone(), self.I_2MN.clone()]), torch.hstack([-self.V_g, self.V_g])])
         c_int = torch.matmul(_safe_solve(M_int, M_g), torch.hstack([c_lp, c_ln]))
 
-        eig_val = self.Lamda_store[layer_number]
+        eig_val = self.Lamda_store[layer_number + 1]
         # calculate the field phase phi(x,y) in the x-y plane
         X_grid = torch.arange(er.shape[0], device=self._torch_device) / er.shape[0] * self.Lx
         phi = torch.exp(-1j * self.k0 * (self.kx_inc * X_grid))
@@ -567,7 +563,7 @@ class RCWA():
         for _z in z_points:
             Prop = torch.diag(
                 torch.hstack([torch.exp(-self.k0 * eig_val * _z),
-                              torch.exp(-self.k0 * eig_val * (self.layer_store[layer_number - 1] - _z))]))
+                              torch.exp(-self.k0 * eig_val * (self.layer_configs[layer_number][0] - _z))]))
 
             psi = torch.linalg.multi_dot([M_int, Prop, c_int])
             sx, sy, ux, uy = torch.split(psi, self.MN.item(), dim=0)
@@ -613,8 +609,9 @@ class RCWA():
         """
         Calculate the absorption in a given layer by integrating the power loss density over the layer thickness.
         """
-        er = self._to_tensor(self.er_layer[layer_number - 1])
-        mur = self._to_tensor(self.mur_layer[layer_number - 1])
+        layer_number -= 1  # Adjust for zero-based indexing
+        er = self.layer_configs[layer_number][1]
+        mur = self.layer_configs[layer_number][2]
         if er_imag is None:
             er_imag = er.imag
         if mur_imag is None:
@@ -624,7 +621,7 @@ class RCWA():
         if er_imag.all() == 0 and mur_imag.all() == 0:
             return torch.tensor(0.0, device=self._torch_device)
 
-        thickness = float(self.layer_store[layer_number])
+        thickness = self.layer_configs[layer_number][0].item()
         Nz = torch.linspace(0, thickness, grid_points + 1, dtype=torch.float64, device=self._torch_device)
         dz = thickness / grid_points
 
@@ -634,13 +631,13 @@ class RCWA():
         er_conv = self._convolution_matrices(er)
         mur_conv = self._convolution_matrices(mur)
 
-        c_ln = _safe_solve(self.S_global_store[layer_number - 1][1],
-                           self.c_ref - torch.matmul(self.S_global_store[layer_number - 1][0], self.c_src))
-        c_lp = torch.matmul(self.S_global_store[layer_number - 1][2], self.c_src) + torch.matmul(
-            self.S_global_store[layer_number - 1][3], c_ln)
+        c_ln = _safe_solve(self.S_global_store[layer_number][1],
+                           self.c_ref - torch.matmul(self.S_global_store[layer_number][0], self.c_src))
+        c_lp = torch.matmul(self.S_global_store[layer_number][2], self.c_src) + torch.matmul(
+            self.S_global_store[layer_number][3], c_ln)
 
-        W = self.W_store[layer_number]
-        V = self.V_store[layer_number]
+        W = self.W_store[layer_number + 1]
+        V = self.V_store[layer_number + 1]
         M_int = torch.vstack([torch.hstack([W, W]), torch.hstack([-V, V])])
         M_g = torch.vstack(
             [torch.hstack([self.I_2MN.clone(), self.I_2MN.clone()]), torch.hstack([-self.V_g, self.V_g])])
@@ -694,22 +691,13 @@ class RCWA():
         Rebuild the S-matrix stack using the current thickness, er, and mur parameters.
         This should be called at each optimization step to ensure the RCWA state is up-to-date.
         """
+        self.rebuild_counter += 1
         self.reset_stores()
-        # Re-add reference layer
         self.add_ref_layer(er_ref=self.er_ref.item(), mur_ref=self.mur_ref.item())
-        # Add the optimizable layer using the existing parameter and material values
-        if len(self.thickness_params) > 0:
-            thickness = self.thickness_params[0]
-        else:
-            thickness = self.layer_store[1] if len(self.layer_store) > 1 else torch.tensor(0.0,
-                                                                                           device=self._torch_device)
-        er = self.er_layer[0] if len(self.er_layer) > 0 else torch.tensor(1.0, dtype=self._dtype,
-                                                                          device=self._torch_device)
-        mur = self.mur_layer[0] if len(self.mur_layer) > 0 else torch.tensor(1.0, dtype=self._dtype,
-                                                                             device=self._torch_device)
-        er_conv = self._convolution_matrices(er)
-        mur_conv = self._convolution_matrices(mur)
-        self.S_global = self._layer_S_matrix(thickness, self.S_global, er_conv, mur_conv)
-        self.layer_store.append(thickness.unsqueeze(-1))
-        # Add transmission layer
+        for _layer in range(self.layer_count):
+            er = self.layer_configs[_layer][1]
+            mur = self.layer_configs[_layer][2]
+            thickness = self.layer_configs[_layer][0]
+            optimizing = self.layer_configs[_layer][3] if len(self.layer_configs[_layer]) > 3 else False
+            self.add_layer(er, mur, thickness, optimizing)
         self.add_trs_layer(er_trs=self.er_trs.item(), mur_trs=self.mur_trs.item())

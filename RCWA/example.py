@@ -39,22 +39,22 @@ model.add_layer(er_layer=n_sio2 ** 2, mur_layer=1.0, thickness=init_thickness, o
 model.add_trs_layer(er_trs=n_si ** 2, mur_trs=1.0)
 
 # Optimizer
-params = [p for p in model.parameters() if p.requires_grad]
+params = [_p for _p in model.thickness_params if _p.requires_grad]
 optimizer = optim.Adam(params, lr=0.025)
 
 # Optimization loop
-for epoch in range(100):
+for _epoch in range(100):
     optimizer.zero_grad()
     model.rebuild()
     reflection, transmission = model.calc_global_ref_trs()
     loss = - reflection  # maximize reflection
     loss.backward()
     optimizer.step()
-    thickness = model.thickness_params[0]
+    thickness = model.thickness_params[0].real
     with torch.no_grad():
         thickness.clamp_(min=0.0)
-    if epoch % 10 == 0:
-        print(f"Epoch {epoch}: Reflection={reflection.item():.4f}, Thickness={thickness.item():.4f}")
+    if _epoch % 10 == 0:
+        print(f"Epoch {_epoch}: Reflection={reflection.item():.4f}, Thickness={thickness.item():.4f}")
 
 # Final result
 optimal_thickness = model.thickness_params[0].item()
