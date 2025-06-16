@@ -1,6 +1,6 @@
 import torch
 import torch.optim as optim
-from rcwa import rcwa
+from rcwa import RCWA
 
 # Constants
 wavelength = 1.525  # microns
@@ -15,7 +15,7 @@ Lx = Ly = 1.0  # arbitrary, since we use M=N=0 (no periodicity)
 basis = (0, 0)  # only zeroth order
 
 # RCWA setup
-model = rcwa(
+model = RCWA(
     wavelength=wavelength,
     theta=theta,
     phi=phi,

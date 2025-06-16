@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 from safe_autograd import stable_eig
 
+
 def _safe_solve(A, B=None):
     """
     Tries to solve AX = B. If A is singular or ill-conditioned, uses pseudo-inverse for stability.
@@ -14,7 +15,7 @@ def _safe_solve(A, B=None):
         return torch.matmul(torch.linalg.pinv(A), B)
 
 
-class rcwa():
+class RCWA():
     def __init__(
             self, wavelength, theta, phi, TE, TM, Lx, Ly,
             basis=None, gap_material=None, dtype=torch.complex64, torch_device=None,
@@ -39,8 +40,8 @@ class rcwa():
             self.er_gap = torch.tensor(1, dtype=torch.float64, device=self._torch_device)
             self.mur_gap = torch.tensor(1, dtype=torch.float64, device=self._torch_device)
         else:
-            self.er_gap = torch.tensor(gap_material['er_gap'], dtype=self._dtype, device=self._torch_device)
-            self.mur_gap = torch.tensor(gap_material['mur_gap'], dtype=self._dtype, device=self._torch_device)
+            self.er_gap = torch.as_tensor(gap_material['er_gap'], dtype=self._dtype, device=self._torch_device)
+            self.mur_gap = torch.as_tensor(gap_material['mur_gap'], dtype=self._dtype, device=self._torch_device)
 
         # Source
         self.wavelength = torch.as_tensor(wavelength, dtype=self._dtype, device=self._torch_device)
@@ -60,8 +61,8 @@ class rcwa():
         self.MN = (2 * self.M + 1) * (2 * self.N + 1)
 
         self.k0 = 2 * torch.pi / self.wavelength
-        self.m = torch.arange(-self.M.item(), self.M.item() + 1, dtype=torch.int32, device=self._torch_device)
-        self.n = torch.arange(-self.N.item(), self.N.item() + 1, dtype=torch.int32, device=self._torch_device)
+        self.M = torch.arange(-self.M.item(), self.M.item() + 1, dtype=torch.int32, device=self._torch_device)
+        self.N = torch.arange(-self.N.item(), self.N.item() + 1, dtype=torch.int32, device=self._torch_device)
 
         self.I_MN = torch.eye(self.MN.item(), dtype=self._dtype, device=self._torch_device)
         self.O_MN = torch.zeros_like(self.I_MN)
@@ -75,10 +76,10 @@ class rcwa():
         self.W_store, self.V_store, self.Lamda_store = [], [], []
         self.S_global_store, self.er_layer, self.mur_layer = [], [], []
         self.layer_count = 0
-        self.layer_store = torch.tensor([0.0], dtype=torch.float32, device=self._torch_device)
+        self.layer_store = []
 
         if self.requires_grad:
-            self.thickness_params = nn.ParameterList()  # For optimizable thicknesses
+            self.thickness_params = nn.ParameterList()
             self.er_params = nn.ParameterList()
             self.mur_params = nn.ParameterList()
 
@@ -107,8 +108,8 @@ class rcwa():
         return params
 
     def add_ref_layer(self, er_ref=1.0, mur_ref=1.0):
-        self.er_ref = torch.as_tensor(er_ref, dtype=self._dtype, device=self._torch_device)
-        self.mur_ref = torch.as_tensor(mur_ref, dtype=self._dtype, device=self._torch_device)
+        self.er_ref = torch.as_tensor(er_ref)
+        self.mur_ref = torch.as_tensor(mur_ref)
         self.n_inc = torch.sqrt(self.er_ref * self.mur_ref)
         sin_theta = torch.sin(self.theta)
         cos_theta = torch.cos(self.theta)
@@ -118,14 +119,14 @@ class rcwa():
         self.ky_inc = self.n_inc * sin_theta * sin_phi
         self.kz_inc = self.n_inc * cos_theta
         self.k_inc = torch.stack([self.kx_inc, self.ky_inc, self.kz_inc], dim=0)
-        delta_kx = 2 * torch.pi * self.m / (self.k0 * self.Lx)
-        delta_ky = 2 * torch.pi * self.n / (self.k0 * self.Ly)
+        delta_kx = 2 * torch.pi * self.M.item() / (self.k0 * self.Lx)
+        delta_ky = 2 * torch.pi * self.N.item() / (self.k0 * self.Ly)
         self.kx = self.kx_inc - delta_kx
         self.ky = self.ky_inc - delta_ky
         self.Ksx, self.Ksy = torch.meshgrid(self.kx, self.ky, indexing='ij')
         self.Kx = torch.diag(self.Ksx.flatten()).to(dtype=self._dtype, device=self._torch_device)
         self.Ky = torch.diag(self.Ksy.flatten()).to(dtype=self._dtype, device=self._torch_device)
-        self.kz_ref = self._find_kz(self.er_ref, self.mur_ref)
+        self.kz_ref = self._find_kz(self.er_ref.item(), self.mur_ref.item())
         self._initialize_gap_medium()
 
     def _initialize_gap_medium(self, er_gap=1.0, mur_gap=1.0):
@@ -150,46 +151,22 @@ class rcwa():
         mur_layer = self._to_tensor(mur_layer)
         thickness = self._to_tensor(thickness)
 
-        # Only create parameters if not already present
         if optimizing == 'thickness' and self.requires_grad:
-            if len(self.thickness_params) == 0:
-                thickness_param = nn.Parameter(torch.tensor(thickness, dtype=torch.float32, device=self._torch_device))
-                self.thickness_params.append(thickness_param)
-                thickness_val = thickness_param
-            else:
-                thickness_val = self.thickness_params[0]
-        else:
-            thickness_val = torch.tensor(thickness, dtype=torch.float32, device=self._torch_device)
+            thickness.requires_grad_()
+        elif optimizing == 'er' and self.requires_grad:
+            er_layer.requires_grad_()
+        elif optimizing == 'mur' and self.requires_grad:
+            mur_layer.requires_grad_()
 
-        # er parameter
-        if optimizing == 'er' and self.requires_grad:
-            if len(self.er_params) == 0:
-                er_param = nn.Parameter(torch.tensor(er_layer, dtype=self._dtype, device=self._torch_device))
-                self.er_params.append(er_param)
-                er_val = er_param
-            else:
-                er_val = self.er_params[0]
-        else:
-            er_val = torch.tensor(er_layer, dtype=self._dtype, device=self._torch_device)
 
-        # mur parameter
-        if optimizing == 'mur' and self.requires_grad:
-            if len(self.mur_params) == 0:
-                mur_param = nn.Parameter(torch.tensor(mur_layer, dtype=self._dtype, device=self._torch_device))
-                self.mur_params.append(mur_param)
-                mur_val = mur_param
-            else:
-                mur_val = self.mur_params[0]
-        else:
-            mur_val = torch.tensor(mur_layer, dtype=self._dtype, device=self._torch_device)
-
-        self.layer_count += 1
-        self.er_layer.append(er_val)
-        self.mur_layer.append(mur_val)
-        er_conv = self._convolution_matrices(er_val)
-        mur_conv = self._convolution_matrices(mur_val)
-        self.S_global = self._layer_S_matrix(thickness_val, self.S_global, er_conv, mur_conv)
-        self.layer_store = torch.cat([self.layer_store, thickness_val.squeeze(0)])
+        er_conv = self._convolution_matrices(er_layer)
+        mur_conv = self._convolution_matrices(mur_layer)
+        self.S_global = self._layer_S_matrix(thickness, self.S_global, er_conv, mur_conv)
+        self.layer_store.append(thickness)
+        with torch.no_grad():
+            self.layer_count += 1
+            self.er_layer.append(er_layer)
+            self.mur_layer.append(mur_layer)
 
     def add_trs_layer(self, er_trs=1.0, mur_trs=1.0):
         self.er_trs = torch.as_tensor(er_trs, dtype=self._dtype, device=self._torch_device)
@@ -286,7 +263,7 @@ class rcwa():
         if self.er_gap != self.er_ref or self.mur_gap != self.mur_ref:
             S11_ref, S12_ref, S21_ref, S22_ref = self._scattering_matrix_ref(V_ref)
         else:
-            S11_ref = S22_ref = self.Z_2MN.clone()
+            S11_ref = S22_ref = self.O_2MN.clone()
             S12_ref = S21_ref = self.I_2MN.clone()
         S_ref = torch.stack([S11_ref, S12_ref, S21_ref, S22_ref])
         S_global = self._Redheffer_star(S_ref, S_global)
@@ -320,7 +297,11 @@ class rcwa():
         return S_global
 
     def _find_kz(self, er=1.0, mur=1.0):
-        erc, murc = torch.conj(self._to_tensor(er)), torch.conj(self._to_tensor(mur))
+        if not torch.is_tensor(er):
+            er = self._to_tensor(er)
+        if not torch.is_tensor(mur):
+            mur = self._to_tensor(mur)
+        erc, murc = torch.conj(er), torch.conj(mur)
         kz = torch.conj(torch.sqrt(erc * murc - self.Ksx ** 2 - self.Ksy ** 2).reshape(-1)).to(dtype=self._dtype,
                                                                                                device=self._torch_device)
         return kz
@@ -344,10 +325,9 @@ class rcwa():
         return Q
 
     def _Q_matrix_half(self, er, mur):
-        I = torch.eye(self.MN, dtype=self._dtype, device=self._torch_device)
         Q_11 = torch.matmul(self.Kx, self.Ky) / mur
-        Q_12 = er * I - torch.matmul(self.Kx, self.Kx) / mur
-        Q_21 = torch.matmul(self.Ky, self.Ky) / mur - er * I
+        Q_12 = er * self.I_MN.clone() - torch.matmul(self.Kx, self.Kx) / mur
+        Q_21 = torch.matmul(self.Ky, self.Ky) / mur - er * self.I_MN.clone()
         Q_22 = - torch.matmul(self.Ky, self.Kx) / mur
         Q = torch.vstack([torch.hstack([Q_11, Q_12]), torch.hstack([Q_21, Q_22])])
         return Q
@@ -374,7 +354,7 @@ class rcwa():
         """
         V_ref = torch.as_tensor(V_ref, dtype=self._dtype, device=self._torch_device)
         V_g = self.V_g
-        I = torch.eye(2 * self.MN, dtype=self._dtype, device=self._torch_device)
+        I = torch.eye(2 * self.MN.item(), dtype=self._dtype, device=self._torch_device)
         A = I + _safe_solve(V_g, V_ref)
         B = I - _safe_solve(V_g, V_ref)
         S11 = -_safe_solve(A, B)
@@ -389,7 +369,7 @@ class rcwa():
         """
         V_trs = torch.as_tensor(V_trs, dtype=self._dtype, device=self._torch_device)
         V_g = self.V_g
-        I = torch.eye(2 * self.MN, dtype=self._dtype, device=self._torch_device)
+        I = torch.eye(2 * self.MN.item(), dtype=self._dtype, device=self._torch_device)
         Vg_inv_Vtrs = _safe_solve(V_g, V_trs)
         A = I + Vg_inv_Vtrs
         B = I - Vg_inv_Vtrs
@@ -407,16 +387,16 @@ class rcwa():
         """
         H = torch.as_tensor(H, dtype=self._dtype, device=self._torch_device)
         if H.dim() == 0 or (H.dim() == 2 and (H == H[0, 0]).all()):
-            return torch.eye(self.MN, dtype=self._dtype, device=self._torch_device) * H.flatten()[0]
+            return self.I_MN.clone() * H.flatten()[0]
         return self._2dconv_matrices(H)
 
     def _2dconv_matrices(self, H):
         """
         Builds the full 2D convolution matrix from the real-space material tensor.
         """
-        x_mesh, y_mesh = torch.meshgrid(self.m, self.n, indexing='ij')
+        x_mesh, y_mesh = torch.meshgrid(self.M, self.N, indexing='ij')
         x_flat, y_flat = x_mesh.flatten(), y_mesh.flatten()
-        index = torch.arange(self.MN, dtype=torch.int32, device=self._torch_device)
+        index = torch.arange(self.MN.item(), dtype=torch.int32, device=self._torch_device)
         x_index, y_index = torch.meshgrid(index, index, indexing='ij')
         H_fft = torch.fft.fft2(H) / (H.shape[0] * H.shape[1])
         H_conv = H_fft[x_flat[x_index] - x_flat[y_index], y_flat[x_index] - y_flat[y_index]]
@@ -439,8 +419,7 @@ class rcwa():
         W = self.W_store[layer_number]
         V = self.V_store[layer_number]
         M_int = torch.vstack([torch.hstack([W, W]), torch.hstack([-V, V])])
-        I_2MN = torch.eye(2 * self.MN, dtype=self._dtype, device=self._torch_device)
-        M_g = torch.vstack([torch.hstack([I_2MN, I_2MN]), torch.hstack([-self.V_g, self.V_g])])
+        M_g = torch.vstack([torch.hstack([self.I_2MN.clone(), self.I_2MN.clone()]), torch.hstack([-self.V_g, self.V_g])])
         c_int = torch.matmul(_safe_solve(M_int, M_g), torch.hstack([c_lp, c_ln]))
 
         eig_val = self.Lamda_store[layer_number]
@@ -457,16 +436,16 @@ class rcwa():
         )
         psi = torch.linalg.multi_dot([c_int, Prop])
 
-        sx, sy, ux, uy = torch.split(psi, self.MN, dim=0)
+        sx, sy, ux, uy = torch.split(psi, self.MN.item(), dim=0)
         sz = -1j * _safe_solve(er_conv, torch.matmul(self.Kx, uy) - torch.matmul(self.Ky, ux))
         uz = -1j * _safe_solve(mur_conv, torch.matmul(self.Kx, sy) - torch.matmul(self.Ky, sx))
 
-        Ex = phi * torch.fft.ifft2(sx.reshape(2 * self.M + 1, 2 * self.N + 1), s=er.shape, norm='forward')
-        Ey = phi * torch.fft.ifft2(sy.reshape(2 * self.M + 1, 2 * self.N + 1), s=er.shape, norm='forward')
-        Ez = phi * torch.fft.ifft2(sz.reshape(2 * self.M + 1, 2 * self.N + 1), s=er.shape, norm='forward')
-        Hx = phi * torch.fft.ifft2(ux.reshape(2 * self.M + 1, 2 * self.N + 1), s=mur.shape, norm='forward')
-        Hy = phi * torch.fft.ifft2(uy.reshape(2 * self.M + 1, 2 * self.N + 1), s=mur.shape, norm='forward')
-        Hz = phi * torch.fft.ifft2(uz.reshape(2 * self.M + 1, 2 * self.N + 1), s=mur.shape, norm='forward')
+        Ex = phi * torch.fft.ifft2(sx.reshape(2 * self.M.item() + 1, 2 * self.N.item() + 1), s=er.shape, norm='forward')
+        Ey = phi * torch.fft.ifft2(sy.reshape(2 * self.M.item() + 1, 2 * self.N.item() + 1), s=er.shape, norm='forward')
+        Ez = phi * torch.fft.ifft2(sz.reshape(2 * self.M.item() + 1, 2 * self.N.item() + 1), s=er.shape, norm='forward')
+        Hx = phi * torch.fft.ifft2(ux.reshape(2 * self.M.item() + 1, 2 * self.N.item() + 1), s=mur.shape, norm='forward')
+        Hy = phi * torch.fft.ifft2(uy.reshape(2 * self.M.item() + 1, 2 * self.N.item() + 1), s=mur.shape, norm='forward')
+        Hz = phi * torch.fft.ifft2(uz.reshape(2 * self.M.item() + 1, 2 * self.N.item() + 1), s=mur.shape, norm='forward')
         return Ex, Ey, Ez, Hx, Hy, Hz
 
     def solve_xz_field(self, layer_number, precision=0.01):
@@ -487,8 +466,7 @@ class rcwa():
         W = self.W_store[layer_number]
         V = self.V_store[layer_number]
         M_int = torch.vstack([torch.hstack([W, W]), torch.hstack([-V, V])])
-        I_2MN = torch.eye(2 * self.MN, dtype=self._dtype, device=self._torch_device)
-        M_g = torch.vstack([torch.hstack([I_2MN, I_2MN]), torch.hstack([-self.V_g, self.V_g])])
+        M_g = torch.vstack([torch.hstack([self.I_2MN.clone(), self.I_2MN.clone()]), torch.hstack([-self.V_g, self.V_g])])
         c_int = _safe_solve(M_int, M_g)
         c_int = torch.matmul(c_int, torch.hstack([c_lp, c_ln]))
 
@@ -511,29 +489,29 @@ class rcwa():
 
             # Use multi_dot for improved stability
             psi = torch.linalg.multi_dot([M_int, Prop, c_int])
-            sx, sy, ux, uy = torch.split(psi, self.MN, dim=0)
+            sx, sy, ux, uy = torch.split(psi, self.MN.item(), dim=0)
 
             sz = -1j * _safe_solve(er_conv, torch.matmul(self.Kx, uy) - torch.matmul(self.Ky, ux))
             uz = -1j * _safe_solve(mur_conv, torch.matmul(self.Kx, sy) - torch.matmul(self.Ky, sx))
 
             # calculate the E and H field by inverse FFT
             Ex.append(phi * torch.fft.ifftshift(
-                torch.fft.ifft(torch.fft.ifft(sx.reshape(2 * self.M + 1, 2 * self.N + 1), norm='forward')[:, 0],
+                torch.fft.ifft(torch.fft.ifft(sx.reshape(2 * self.M.item() + 1, 2 * self.N.item() + 1), norm='forward')[:, 0],
                                n=er.shape[0], norm='forward')))
             Ey.append(phi * torch.fft.ifftshift(
-                torch.fft.ifft(torch.fft.ifft(sy.reshape(2 * self.M + 1, 2 * self.N + 1), norm='forward')[:, 0],
+                torch.fft.ifft(torch.fft.ifft(sy.reshape(2 * self.M.item() + 1, 2 * self.N.item() + 1), norm='forward')[:, 0],
                                n=er.shape[0], norm='forward')))
             Ez.append(phi * torch.fft.ifftshift(
-                torch.fft.ifft(torch.fft.ifft(sz.reshape(2 * self.M + 1, 2 * self.N + 1), norm='forward')[:, 0],
+                torch.fft.ifft(torch.fft.ifft(sz.reshape(2 * self.M.item() + 1, 2 * self.N.item() + 1), norm='forward')[:, 0],
                                n=er.shape[0], norm='forward')))
             Hx.append(phi * torch.fft.ifftshift(
-                torch.fft.ifft(torch.fft.ifft(ux.reshape(2 * self.M + 1, 2 * self.N + 1), norm='forward')[:, 0],
+                torch.fft.ifft(torch.fft.ifft(ux.reshape(2 * self.M.item() + 1, 2 * self.N.item() + 1), norm='forward')[:, 0],
                                n=er.shape[0], norm='forward')))
             Hy.append(phi * torch.fft.ifftshift(
-                torch.fft.ifft(torch.fft.ifft(uy.reshape(2 * self.M + 1, 2 * self.N + 1), norm='forward')[:, 0],
+                torch.fft.ifft(torch.fft.ifft(uy.reshape(2 * self.M.item() + 1, 2 * self.N.item() + 1), norm='forward')[:, 0],
                                n=er.shape[0], norm='forward')))
             Hz.append(phi * torch.fft.ifftshift(
-                torch.fft.ifft(torch.fft.ifft(uz.reshape(2 * self.M + 1, 2 * self.N + 1), norm='forward')[:, 0],
+                torch.fft.ifft(torch.fft.ifft(uz.reshape(2 * self.M.item() + 1, 2 * self.N.item() + 1), norm='forward')[:, 0],
                                n=er.shape[0], norm='forward')))
 
         Ex = torch.stack(Ex)
@@ -562,8 +540,7 @@ class rcwa():
         W = self.W_store[layer_number]
         V = self.V_store[layer_number]
         M_int = torch.vstack([torch.hstack([W, W]), torch.hstack([-V, V])])
-        I_2MN = torch.eye(2 * self.MN, dtype=self._dtype, device=self._torch_device)
-        M_g = torch.vstack([torch.hstack([I_2MN, I_2MN]), torch.hstack([-self.V_g, self.V_g])])
+        M_g = torch.vstack([torch.hstack([self.I_2MN.clone(), self.I_2MN.clone()]), torch.hstack([-self.V_g, self.V_g])])
         c_int = torch.matmul(_safe_solve(M_int, M_g), torch.hstack([c_lp, c_ln]))
 
         eig_val = self.Lamda_store[layer_number]
@@ -583,29 +560,29 @@ class rcwa():
                               torch.exp(-self.k0 * eig_val * (self.layer_store[layer_number - 1] - _z))]))
 
             psi = torch.linalg.multi_dot([M_int, Prop, c_int])
-            sx, sy, ux, uy = torch.split(psi, self.MN, dim=0)
+            sx, sy, ux, uy = torch.split(psi, self.MN.item(), dim=0)
 
             sz = -1j * _safe_solve(er_conv, torch.matmul(self.Kx, uy) - torch.matmul(self.Ky, ux))
             uz = -1j * _safe_solve(mur_conv, torch.matmul(self.Kx, sy) - torch.matmul(self.Ky, sx))
 
             # calculate the E and H field by inverse FFT
             Ex.append(phi * torch.fft.ifftshift(
-                torch.fft.ifft(torch.fft.ifft(sx.reshape(2 * self.M + 1, 2 * self.N + 1).T, norm='forward')[:, 0],
+                torch.fft.ifft(torch.fft.ifft(sx.reshape(2 * self.M.item() + 1, 2 * self.N.item() + 1).T, norm='forward')[:, 0],
                                n=er.shape[1], norm='forward')))
             Ey.append(phi * torch.fft.ifftshift(
-                torch.fft.ifft(torch.fft.ifft(sy.reshape(2 * self.M + 1, 2 * self.N + 1).T, norm='forward')[:, 0],
+                torch.fft.ifft(torch.fft.ifft(sy.reshape(2 * self.M.item() + 1, 2 * self.N.item() + 1).T, norm='forward')[:, 0],
                                n=er.shape[1], norm='forward')))
             Ez.append(phi * torch.fft.ifftshift(
-                torch.fft.ifft(torch.fft.ifft(sz.reshape(2 * self.M + 1, 2 * self.N + 1).T, norm='forward')[:, 0],
+                torch.fft.ifft(torch.fft.ifft(sz.reshape(2 * self.M.item() + 1, 2 * self.N.item() + 1).T, norm='forward')[:, 0],
                                n=er.shape[1], norm='forward')))
             Hx.append(phi * torch.fft.ifftshift(
-                torch.fft.ifft(torch.fft.ifft(ux.reshape(2 * self.M + 1, 2 * self.N + 1).T, norm='forward')[:, 0],
+                torch.fft.ifft(torch.fft.ifft(ux.reshape(2 * self.M.item() + 1, 2 * self.N.item() + 1).T, norm='forward')[:, 0],
                                n=er.shape[1], norm='forward')))
             Hy.append(phi * torch.fft.ifftshift(
-                torch.fft.ifft(torch.fft.ifft(uy.reshape(2 * self.M + 1, 2 * self.N + 1).T, norm='forward')[:, 0],
+                torch.fft.ifft(torch.fft.ifft(uy.reshape(2 * self.M.item() + 1, 2 * self.N.item() + 1).T, norm='forward')[:, 0],
                                n=er.shape[1], norm='forward')))
             Hz.append(phi * torch.fft.ifftshift(
-                torch.fft.ifft(torch.fft.ifft(uz.reshape(2 * self.M + 1, 2 * self.N + 1).T, norm='forward')[:, 0],
+                torch.fft.ifft(torch.fft.ifft(uz.reshape(2 * self.M.item() + 1, 2 * self.N.item() + 1).T, norm='forward')[:, 0],
                                n=er.shape[1], norm='forward')))
 
         Ex = torch.stack(Ex)
@@ -628,7 +605,7 @@ class rcwa():
             mur_imag = mur.imag
         er_imag = torch.as_tensor(er_imag, device=self._torch_device)
         mur_imag = torch.as_tensor(mur_imag, device=self._torch_device)
-        if torch.all(er_imag == 0) and torch.all(mur_imag == 0):
+        if er_imag.all() == 0 and mur_imag.all() == 0:
             return torch.tensor(0.0, device=self._torch_device)
 
         thickness = float(self.layer_store[layer_number])
@@ -649,8 +626,7 @@ class rcwa():
         W = self.W_store[layer_number]
         V = self.V_store[layer_number]
         M_int = torch.vstack([torch.hstack([W, W]), torch.hstack([-V, V])])
-        I_2MN = torch.eye(2 * self.MN, dtype=self._dtype, device=self._torch_device)
-        M_g = torch.vstack([torch.hstack([I_2MN, I_2MN]), torch.hstack([-self.V_g, self.V_g])])
+        M_g = torch.vstack([torch.hstack([self.I_2MN.clone(), self.I_2MN.clone()]), torch.hstack([-self.V_g, self.V_g])])
         c_int = torch.matmul(_safe_solve(M_int, M_g), torch.hstack([c_lp, c_ln]))
 
         eig_val = self.Lamda_store[layer_number]
@@ -664,11 +640,11 @@ class rcwa():
                 ])
             )
             psi = torch.matmul(M_int, torch.matmul(Prop, c_int))
-            sx, sy, ux, uy = torch.split(psi, self.MN, dim=0)
+            sx, sy, ux, uy = torch.split(psi, self.MN.item(), dim=0)
             sz = -1j * _safe_solve(er_conv, torch.matmul(self.Kx, uy) - torch.matmul(self.Ky, ux))
             uz = -1j * _safe_solve(mur_conv, torch.matmul(self.Kx, sy) - torch.matmul(self.Ky, sx))
 
-            target_size = (2 * self.M + 1, 2 * self.N + 1)
+            target_size = (2 * self.M.item() + 1, 2 * self.N.item() + 1)
             ex = torch.fft.ifftshift(torch.fft.ifft2(sx.reshape(target_size), s=er.shape))
             ey = torch.fft.ifftshift(torch.fft.ifft2(sy.reshape(target_size), s=er.shape))
             ez = torch.fft.ifftshift(torch.fft.ifft2(sz.reshape(target_size), s=er.shape))
@@ -703,7 +679,7 @@ class rcwa():
         """
         self.reset_stores()
         # Re-add reference layer
-        self.add_ref_layer(er_ref=self.er_ref, mur_ref=self.mur_ref)
+        self.add_ref_layer(er_ref=self.er_ref.item(), mur_ref=self.mur_ref.item())
         # Add the optimizable layer using the existing parameter and material values
         if len(self.thickness_params) > 0:
             thickness = self.thickness_params[0]
@@ -720,4 +696,4 @@ class rcwa():
         self.layer_store = torch.cat(
             [torch.tensor([0.0], dtype=torch.float32, device=self._torch_device), thickness.unsqueeze(0)])
         # Add transmission layer
-        self.add_trs_layer(er_trs=self.er_trs, mur_trs=self.mur_trs)
+        self.add_trs_layer(er_trs=self.er_trs.item(), mur_trs=self.mur_trs.item())
