@@ -12,7 +12,7 @@ def _safe_solve(A, B=None):
     try:
         return torch.linalg.solve(A, B)
     except RuntimeError:
-        return torch.matmul(torch.linalg.pinv(A), B)
+        return torch.linalg.pinv(A) @ B
 
 
 class RCWA():
@@ -122,19 +122,18 @@ class RCWA():
         self._initialize_gap_medium()
 
     def _initialize_gap_medium(self, er_gap=1.0, mur_gap=1.0):
-        kz_squared = self.I_MN.clone() * er_gap * mur_gap - torch.matmul(self.Kx, self.Kx) - torch.matmul(self.Ky,
-                                                                                                          self.Ky)
+        kz_squared = self.I_MN.clone() * er_gap * mur_gap - self.Kx @ self.Kx - self.Ky @ self.Ky
         Kz_g = torch.sqrt(kz_squared).conj()
         self.W_g = self.I_2MN.clone()
-        KxKy = torch.matmul(self.Kx, self.Ky)
-        Kx2 = torch.matmul(self.Kx, self.Kx)
-        Ky2 = torch.matmul(self.Ky, self.Ky)
+        KxKy = self.Kx @ self.Ky
+        Kx2 = self.Kx @ self.Kx
+        Ky2 = self.Ky @ self.Ky
         upper_block = torch.hstack([KxKy, self.I_MN.clone() - Kx2])
         lower_block = torch.hstack([Ky2 - self.I_MN.clone(), -KxKy])
         self.Q_g = torch.vstack([upper_block, lower_block])
         inv_diag_Kz = torch.diag(-1j / torch.diag(Kz_g))
         inv_lamda_g = torch.block_diag(inv_diag_Kz, inv_diag_Kz)
-        self.V_g = torch.matmul(self.Q_g, inv_lamda_g)
+        self.V_g = self.Q_g @ inv_lamda_g
 
     def add_layer(self, er_layer=1.0, mur_layer=1.0, thickness=0.0, optimizing=None):
         """
@@ -201,7 +200,7 @@ class RCWA():
         """
         Q_trs = self._Q_matrix_half(self.er_trs, self.mur_trs)
         Lamda_trs_inv = torch.diag(torch.hstack((-1j / self.kz_trs, -1j / self.kz_trs)))
-        V_trs = torch.matmul(Q_trs, Lamda_trs_inv)
+        V_trs = Q_trs @ Lamda_trs_inv
         if self.er_gap != self.er_trs or self.mur_gap != self.mur_trs:
             S11_trs, S12_trs, S21_trs, S22_trs = self._scattering_matrix_trs(V_trs)
         else:
@@ -221,12 +220,12 @@ class RCWA():
         """
         S11_A, S12_A, S21_A, S22_A = S_A
         S11_B, S12_B, S21_B, S22_B = S_B
-        D = self.I_2MN.clone() - torch.matmul(S11_B, S22_A)
-        F = self.I_2MN.clone() - torch.matmul(S22_A, S11_B)
-        S11_AB = S11_A + torch.matmul(S12_A, _safe_solve(D, torch.matmul(S11_B, S21_A)))
-        S12_AB = torch.matmul(S12_A, _safe_solve(D, S12_B))
-        S21_AB = torch.matmul(S21_B, _safe_solve(F, S21_A))
-        S22_AB = S22_B + torch.matmul(S21_B, _safe_solve(F, torch.matmul(S22_A, S12_B)))
+        D = self.I_2MN.clone() - S11_B @ S22_A
+        F = self.I_2MN.clone() - S22_A @ S11_B
+        S11_AB = S11_A + S12_A @ _safe_solve(D, S11_B @ S21_A)
+        S12_AB = S12_A @ _safe_solve(D, S12_B)
+        S21_AB = S21_B @ _safe_solve(F, S21_A)
+        S22_AB = S22_B + S21_B @ _safe_solve(F, S22_A @ S12_B)
         S_AB = torch.stack([S11_AB, S12_AB, S21_AB, S22_AB])
         return S_AB
 
@@ -261,7 +260,7 @@ class RCWA():
     def _ref_region_S_matrix(self, S_global):
         Q_ref = self._Q_matrix_half(self.er_ref, self.mur_ref)
         Lamda_ref_inv = torch.diag(torch.cat([1j / self.kz_ref, 1j / self.kz_ref]))
-        V_ref = torch.matmul(Q_ref , Lamda_ref_inv)
+        V_ref = Q_ref @ Lamda_ref_inv
         if self.er_gap != self.er_ref or self.mur_gap != self.mur_ref:
             S11_ref, S12_ref, S21_ref, S22_ref = self._scattering_matrix_ref(V_ref)
         else:
@@ -278,7 +277,7 @@ class RCWA():
     def _layer_S_matrix(self, layer_thickness, S_global, er_conv, mur_conv):
         P_layer = self._P_matrix(er_conv, mur_conv)
         Q_layer = self._Q_matrix(er_conv, mur_conv)
-        OM2_layer = torch.matmul(P_layer, Q_layer)
+        OM2_layer = P_layer @ Q_layer
 
         if self._stable_grad:
             Lamda2_layer, W_layer = stable_eig.apply(OM2_layer)
@@ -287,7 +286,7 @@ class RCWA():
 
         Lamda_layer = torch.sqrt(Lamda2_layer)
         Lamda_inv = torch.diag(1 / Lamda_layer)
-        V_layer = torch.matmul(Q_layer , torch.matmul(W_layer , Lamda_inv))
+        V_layer = Q_layer @ W_layer @ Lamda_inv
         X_layer = torch.diag(torch.exp(-Lamda_layer * self.k0 * layer_thickness).squeeze())
         S11, S12 = self._scattering_matrix(W_layer, V_layer, X_layer)
         S_layer = torch.stack([S11, S12, S12, S11])
@@ -299,38 +298,35 @@ class RCWA():
         return S_global
 
     def _find_kz(self, er=1.0, mur=1.0):
-        if not torch.is_tensor(er):
-            er = self._to_tensor(er)
-        if not torch.is_tensor(mur):
-            mur = self._to_tensor(mur)
+        er = self._to_tensor(er) if not torch.is_tensor(er) else er
+        mur = self._to_tensor(mur) if not torch.is_tensor(mur) else mur
         erc, murc = torch.conj(er), torch.conj(mur)
-        kz = torch.conj(torch.sqrt(erc * murc - self.Ksx ** 2 - self.Ksy ** 2).reshape(-1)).to(dtype=self._dtype,
-                                                                                               device=self._torch_device)
+        kz = torch.conj(torch.sqrt(erc * murc - self.Ksx ** 2 - self.Ksy ** 2).reshape(-1))
         return kz
 
     def _P_matrix(self, er_conv, mur_conv):
         assert self.Kx.shape == self.Ky.shape == er_conv.shape == mur_conv.shape, 'Kx, Ky and convolution of permittivity/permeability must have same shape'
-        P_11 = torch.matmul(self.Kx, torch.linalg.solve(er_conv, self.Ky))
-        P_12 = mur_conv - torch.matmul(self.Kx, torch.linalg.solve(er_conv, self.Kx))
-        P_21 = torch.matmul(self.Ky, torch.linalg.solve(er_conv, self.Ky)) - mur_conv
-        P_22 = - torch.matmul(self.Ky, torch.linalg.solve(er_conv, self.Kx))
+        P_11 = self.Kx @ torch.linalg.solve(er_conv, self.Ky)
+        P_12 = mur_conv - self.Kx @ torch.linalg.solve(er_conv, self.Kx)
+        P_21 = self.Ky @ torch.linalg.solve(er_conv, self.Ky) - mur_conv
+        P_22 = - self.Ky @ torch.linalg.solve(er_conv, self.Kx)
         P = torch.vstack([torch.hstack([P_11, P_12]), torch.hstack([P_21, P_22])])
         return P
 
     def _Q_matrix(self, er_conv, mur_conv):
         assert self.Kx.shape == self.Ky.shape == er_conv.shape == mur_conv.shape, 'Kx, Ky and convolution of permittivity/permeability must have same shape'
-        Q_11 = torch.matmul(self.Kx, torch.linalg.solve(mur_conv, self.Ky))
-        Q_12 = er_conv - torch.matmul(self.Kx, torch.linalg.solve(mur_conv, self.Kx))
-        Q_21 = torch.matmul(self.Ky, torch.linalg.solve(mur_conv, self.Ky)) - er_conv
-        Q_22 = - torch.matmul(self.Ky, torch.linalg.solve(mur_conv, self.Kx))
+        Q_11 = self.Kx @ torch.linalg.solve(mur_conv, self.Ky)
+        Q_12 = er_conv - self.Kx @ torch.linalg.solve(mur_conv, self.Kx)
+        Q_21 = self.Ky @ torch.linalg.solve(mur_conv, self.Ky) - er_conv
+        Q_22 = - self.Ky @ torch.linalg.solve(mur_conv, self.Kx)
         Q = torch.vstack([torch.hstack([Q_11, Q_12]), torch.hstack([Q_21, Q_22])])
         return Q
 
     def _Q_matrix_half(self, er, mur):
-        Q_11 = torch.matmul(self.Kx, self.Ky) / mur
-        Q_12 = er * self.I_MN.clone() - torch.matmul(self.Kx, self.Kx) / mur
-        Q_21 = torch.matmul(self.Ky, self.Ky) / mur - er * self.I_MN.clone()
-        Q_22 = - torch.matmul(self.Ky, self.Kx) / mur
+        Q_11 = self.Kx @ self.Ky / mur
+        Q_12 = er * self.I_MN.clone() - self.Kx @ self.Kx / mur
+        Q_21 = self.Ky @ self.Ky / mur - er * self.I_MN.clone()
+        Q_22 = - self.Ky @ self.Kx / mur
         Q = torch.vstack([torch.hstack([Q_11, Q_12]), torch.hstack([Q_21, Q_22])])
         return Q
 
@@ -343,11 +339,11 @@ class RCWA():
         A = W_inv_Wg + V_inv_Vg
         B = W_inv_Wg - V_inv_Vg
         A_inv = _safe_solve(A)
-        XA = torch.matmul(X, A)
-        XB = torch.matmul(X, B)
-        D = A - torch.matmul(XB, torch.matmul(A_inv, XB))
-        S11 = _safe_solve(D, torch.matmul(XB, torch.matmul(A_inv, XA)) - B)
-        S12 = _safe_solve(D, torch.matmul(X, (A - torch.matmul(B, torch.matmul(A_inv, B)))))
+        XA = X @ A
+        XB = X @ B
+        D = A - XB @ A_inv @ XB
+        S11 = _safe_solve(D, XB @ A_inv @ XA - B)
+        S12 = _safe_solve(D, X @ (A - B @ A_inv @ B))
         return S11, S12
 
     def _scattering_matrix_ref(self, V_ref):
@@ -360,7 +356,7 @@ class RCWA():
         B = self.I_2MN.clone() - _safe_solve(V_g, V_ref)
         S11 = -_safe_solve(A, B)
         S12 = 2 * _safe_solve(A, self.I_2MN.clone())
-        S21 = 0.5 * (A - torch.matmul(B, _safe_solve(A, B)))
+        S21 = 0.5 * (A - B @ _safe_solve(A, B))
         S22 = _safe_solve(A, B)
         return S11, S12, S21, S22
 
@@ -373,7 +369,7 @@ class RCWA():
         A = self.I_2MN.clone() + _safe_solve(V_g, V_trs)
         B = self.I_2MN.clone() - _safe_solve(V_g, V_trs)
         S11 = _safe_solve(A, B)
-        S12 = 0.5 * (A - torch.matmul(B, _safe_solve(A, B)))
+        S12 = 0.5 * (A - B @ _safe_solve(A, B))
         S21 = 2 * _safe_solve(A, self.I_2MN.clone())
         S22 = - _safe_solve(A, B)
         return S11, S12, S21, S22
@@ -411,16 +407,16 @@ class RCWA():
         mur_conv = self._convolution_matrices(mur)
 
         c_ln = _safe_solve(self.S_global_store[layer_number][1],
-                           self.c_ref - torch.matmul(self.S_global_store[layer_number][0], self.c_src))
-        c_lp = torch.matmul(self.S_global_store[layer_number][2], self.c_src) + torch.matmul(
-            self.S_global_store[layer_number][3], c_ln)
+                           self.c_ref - (self.S_global_store[layer_number][0] @ self.c_src))
+        c_lp = (self.S_global_store[layer_number][2] @ self.c_src) + (
+            self.S_global_store[layer_number][3] @ c_ln)
 
         W = self.W_store[layer_number + 1]
         V = self.V_store[layer_number + 1]
         M_int = torch.vstack([torch.hstack([W, W]), torch.hstack([-V, V])])
         M_g = torch.vstack(
             [torch.hstack([self.I_2MN.clone(), self.I_2MN.clone()]), torch.hstack([-self.V_g, self.V_g])])
-        c_int = torch.matmul(_safe_solve(M_int, M_g), torch.hstack([c_lp, c_ln]))
+        c_int = _safe_solve(M_int, M_g) @ torch.hstack([c_lp, c_ln])
 
         eig_val = self.Lamda_store[layer_number + 1]
         X_grid = torch.arange(er.shape[0], device=self._torch_device) / er.shape[0] * self.Lx
@@ -434,11 +430,11 @@ class RCWA():
                 torch.exp(-self.k0 * eig_val * (layer_thickness - z_depth))
             ])
         )
-        psi = torch.linalg.multi_dot([c_int, Prop])
+        psi = c_int @ Prop
 
         sx, sy, ux, uy = torch.split(psi, self.MN.item(), dim=0)
-        sz = -1j * _safe_solve(er_conv, torch.matmul(self.Kx, uy) - torch.matmul(self.Ky, ux))
-        uz = -1j * _safe_solve(mur_conv, torch.matmul(self.Kx, sy) - torch.matmul(self.Ky, sx))
+        sz = -1j * _safe_solve(er_conv, self.Kx @ uy - self.Ky @ ux)
+        uz = -1j * _safe_solve(mur_conv, self.Kx @ sy - self.Ky @ sx)
 
         Ex = phi * torch.fft.ifft2(sx.reshape(2 * self.M.item() + 1, 2 * self.N.item() + 1), s=er.shape, norm='forward')
         Ey = phi * torch.fft.ifft2(sy.reshape(2 * self.M.item() + 1, 2 * self.N.item() + 1), s=er.shape, norm='forward')
@@ -463,17 +459,16 @@ class RCWA():
         mur_conv = self._convolution_matrices(mur)
 
         c_ln = _safe_solve(self.S_global_store[layer_number][1],
-                           self.c_ref - torch.matmul(self.S_global_store[layer_number][0], self.c_src))
-        c_lp = torch.matmul(self.S_global_store[layer_number][2], self.c_src) + torch.matmul(
-            self.S_global_store[layer_number][3], c_ln)
+                           self.c_ref - (self.S_global_store[layer_number][0] @ self.c_src))
+        c_lp = (self.S_global_store[layer_number][2] @ self.c_src) + (
+            self.S_global_store[layer_number][3] @ c_ln)
 
         W = self.W_store[layer_number + 1]
         V = self.V_store[layer_number + 1]
         M_int = torch.vstack([torch.hstack([W, W]), torch.hstack([-V, V])])
         M_g = torch.vstack(
             [torch.hstack([self.I_2MN.clone(), self.I_2MN.clone()]), torch.hstack([-self.V_g, self.V_g])])
-        c_int = _safe_solve(M_int, M_g)
-        c_int = torch.matmul(c_int, torch.hstack([c_lp, c_ln]))
+        c_int = _safe_solve(M_int, M_g) @ torch.hstack([c_lp, c_ln])
 
         eig_val = self.Lamda_store[layer_number + 1]
 
@@ -492,12 +487,11 @@ class RCWA():
                 torch.hstack([torch.exp(-self.k0 * eig_val * _z),
                               torch.exp(-self.k0 * eig_val * (layer_thickness - _z))]))
 
-            # Use multi_dot for improved stability
-            psi = torch.linalg.multi_dot([M_int, Prop, c_int])
+            psi = M_int @ Prop @ c_int
             sx, sy, ux, uy = torch.split(psi, self.MN.item(), dim=0)
 
-            sz = -1j * _safe_solve(er_conv, torch.matmul(self.Kx, uy) - torch.matmul(self.Ky, ux))
-            uz = -1j * _safe_solve(mur_conv, torch.matmul(self.Kx, sy) - torch.matmul(self.Ky, sx))
+            sz = -1j * _safe_solve(er_conv, self.Kx @ uy - self.Ky @ ux)
+            uz = -1j * _safe_solve(mur_conv, self.Kx @ sy - self.Ky @ sx)
 
             # calculate the E and H field by inverse FFT
             Ex.append(phi * torch.fft.ifftshift(
@@ -545,18 +539,19 @@ class RCWA():
         mur_conv = self._convolution_matrices(mur)
 
         c_ln = _safe_solve(self.S_global_store[layer_number][1],
-                           self.c_ref - torch.matmul(self.S_global_store[layer_number][0], self.c_src))
-        c_lp = torch.matmul(self.S_global_store[layer_number][2], self.c_src) + torch.matmul(
-            self.S_global_store[layer_number][3], c_ln)
+                           self.c_ref - (self.S_global_store[layer_number][0] @ self.c_src))
+        c_lp = (self.S_global_store[layer_number][2] @ self.c_src) + (
+            self.S_global_store[layer_number][3] @ c_ln)
 
         W = self.W_store[layer_number + 1]
         V = self.V_store[layer_number + 1]
         M_int = torch.vstack([torch.hstack([W, W]), torch.hstack([-V, V])])
         M_g = torch.vstack(
             [torch.hstack([self.I_2MN.clone(), self.I_2MN.clone()]), torch.hstack([-self.V_g, self.V_g])])
-        c_int = torch.matmul(_safe_solve(M_int, M_g), torch.hstack([c_lp, c_ln]))
+        c_int = _safe_solve(M_int, M_g) @ torch.hstack([c_lp, c_ln])
 
         eig_val = self.Lamda_store[layer_number + 1]
+
         # calculate the field phase phi(x,y) in the x-y plane
         X_grid = torch.arange(er.shape[0], device=self._torch_device) / er.shape[0] * self.Lx
         phi = torch.exp(-1j * self.k0 * (self.kx_inc * X_grid))
@@ -572,11 +567,11 @@ class RCWA():
                 torch.hstack([torch.exp(-self.k0 * eig_val * _z),
                               torch.exp(-self.k0 * eig_val * (layer_thickness - _z))]))
 
-            psi = torch.linalg.multi_dot([M_int, Prop, c_int])
+            psi = M_int @ Prop @ c_int
             sx, sy, ux, uy = torch.split(psi, self.MN.item(), dim=0)
 
-            sz = -1j * _safe_solve(er_conv, torch.matmul(self.Kx, uy) - torch.matmul(self.Ky, ux))
-            uz = -1j * _safe_solve(mur_conv, torch.matmul(self.Kx, sy) - torch.matmul(self.Ky, sx))
+            sz = -1j * _safe_solve(er_conv, self.Kx @ uy - self.Ky @ ux)
+            uz = -1j * _safe_solve(mur_conv, self.Kx @ sy - self.Ky @ sx)
 
             # calculate the E and H field by inverse FFT
             Ex.append(phi * torch.fft.ifftshift(
@@ -639,16 +634,16 @@ class RCWA():
         mur_conv = self._convolution_matrices(mur)
 
         c_ln = _safe_solve(self.S_global_store[layer_number][1],
-                           self.c_ref - torch.matmul(self.S_global_store[layer_number][0], self.c_src))
-        c_lp = torch.matmul(self.S_global_store[layer_number][2], self.c_src) + torch.matmul(
-            self.S_global_store[layer_number][3], c_ln)
+                           self.c_ref - (self.S_global_store[layer_number][0] @ self.c_src))
+        c_lp = (self.S_global_store[layer_number][2] @ self.c_src) + (
+            self.S_global_store[layer_number][3] @ c_ln)
 
         W = self.W_store[layer_number + 1]
         V = self.V_store[layer_number + 1]
         M_int = torch.vstack([torch.hstack([W, W]), torch.hstack([-V, V])])
         M_g = torch.vstack(
             [torch.hstack([self.I_2MN.clone(), self.I_2MN.clone()]), torch.hstack([-self.V_g, self.V_g])])
-        c_int = torch.matmul(_safe_solve(M_int, M_g), torch.hstack([c_lp, c_ln]))
+        c_int = _safe_solve(M_int, M_g) @ torch.hstack([c_lp, c_ln])
 
         eig_val = self.Lamda_store[layer_number]
         P_layer_abs = []
@@ -662,8 +657,8 @@ class RCWA():
             )
             psi = M_int @ Prop @ c_int
             sx, sy, ux, uy = torch.split(psi, self.MN.item(), dim=0)
-            sz = -1j * _safe_solve(er_conv, torch.matmul(self.Kx, uy) - torch.matmul(self.Ky, ux))
-            uz = -1j * _safe_solve(mur_conv, torch.matmul(self.Kx, sy) - torch.matmul(self.Ky, sx))
+            sz = -1j * _safe_solve(er_conv, self.Kx @ uy - self.Ky @ ux)
+            uz = -1j * _safe_solve(mur_conv, self.Kx @ sy - self.Ky @ sx)
 
             target_size = (2 * self.M.item() + 1, 2 * self.N.item() + 1)
             ex = torch.fft.ifftshift(torch.fft.ifft2(sx.reshape(target_size), s=er.shape))
