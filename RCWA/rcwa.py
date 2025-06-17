@@ -298,8 +298,8 @@ class RCWA():
         return S_global
 
     def _find_kz(self, er=1.0, mur=1.0):
-        er = self._to_tensor(er) if not torch.is_tensor(er) else er
-        mur = self._to_tensor(mur) if not torch.is_tensor(mur) else mur
+        er = self._to_tensor(er, dtype=self._dtype) if not torch.is_tensor(er) else er
+        mur = self._to_tensor(mur, dtype=self._dtype) if not torch.is_tensor(mur) else mur
         erc, murc = torch.conj(er), torch.conj(mur)
         kz = torch.conj(torch.sqrt(erc * murc - self.Ksx ** 2 - self.Ksy ** 2).reshape(-1))
         return kz
